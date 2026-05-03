@@ -917,7 +917,7 @@ def add_buyable_door(
     door_name: str | None = None,
     slide_vector: tuple[float, float, float] | None = None,
     door_texture: str = "clip",
-    trigger_inflate: float = 64.0,
+    trigger_inflate: float = 128.0,
 ) -> dict:
     """Create a buyable door — a 2-entity recipe: a `script_brushmodel` for
     the door geometry that slides away on purchase, and a `trigger_use` for

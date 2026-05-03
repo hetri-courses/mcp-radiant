@@ -119,10 +119,11 @@ def make_demo_map(name: str, *, overwrite: bool = False) -> dict:
     # on the interior wall face.
     #
     # start_zone — pistol wall buy on WEST wall (interior face x=-496)
+    # z=8 (was 16, too high per user; chalk decal extends UP from origin)
     zm.furnish_zone(
         name, "start_zone",
         wall_buys=[
-            {"weapon": "pistol_burst", "origin": (-494, -100, 16), "angles": (0, 270, 0)},
+            {"weapon": "pistol_burst", "origin": (-494, -100, 8), "angles": (0, 270, 0)},
         ],
         spawner_origins=[(-460, -200, 32), (-460, 200, 32)],
         light_origins=[(-320, 0, 200)],
@@ -138,9 +139,12 @@ def make_demo_map(name: str, *, overwrite: bool = False) -> dict:
         perk_zone_center=(320, 0, 16),
         perk_zone_size=(896, 1024, 0),
         perk_margin=160,
+        # Arena wall buys: y=±492 (4 units into room from interior face;
+        # ±488 was further into room and STILL hidden, so try CLOSER to wall);
+        # z=8 to match starter height
         wall_buys=[
-            {"weapon": "smg_standard", "origin": (320, -488, 16), "angles": (0, 180, 0)},
-            {"weapon": "ar_standard",  "origin": (320, 488, 16),  "angles": (0, 0, 0)},
+            {"weapon": "smg_standard", "origin": (320, -492, 8), "angles": (0, 180, 0)},
+            {"weapon": "ar_standard",  "origin": (320, 492, 8),  "angles": (0, 0, 0)},
         ],
         spawner_origins=[(0, -460, 32), (700, 460, 32)],
         light_origins=[
@@ -164,14 +168,16 @@ def make_demo_map(name: str, *, overwrite: bool = False) -> dict:
     summary["steps"].append({"vault_zone_furnished": True})
 
     # 7. Mystery box, pack-a-punch, power switch — vault-zone special items.
-    # Each prefab has its OWN native height/offset — DO NOT change all three
+    # Each prefab has its OWN native height/offset — DO NOT change them
     # together. Empirically dialed in (May 2026 v3 testing):
-    #   - mystery box: z=16 sits flush on floor (its origin IS its base)
-    #   - PaP: z=16 sits on floor; y=224 (16 from wall surface) so back
-    #     doesn't clip — PaP's bbox extends ~16 units behind its origin
+    #   - mystery box: z=16 sits flush on floor (origin = base)
+    #   - PaP: z=32 sits on floor (origin is BELOW the visible model — z=16
+    #     made it float DOWN into the floor, z=32 is the right ground-level);
+    #     y=216 (24 from wall surface) so back doesn't clip;
+    #     yaw=90 was confirmed correct by user — DO NOT touch
     #   - power switch: z=24, y=-232, yaw=180 — confirmed perfect by user
     zm.add_mystery_box(name, origin=(1024, 0, 16), angles=(0, 0, 0))
-    zm.add_pack_a_punch(name, origin=(1024, 224, 16), angles=(0, 90, 0))
+    zm.add_pack_a_punch(name, origin=(1024, 216, 32), angles=(0, 90, 0))
     zm.add_power_switch(name, origin=(1024, -232, 24), angles=(0, 180, 0))
     summary["steps"].append({"vault_features": ["mystery_box", "pack_a_punch", "power_switch"]})
 
