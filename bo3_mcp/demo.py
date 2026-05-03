@@ -139,12 +139,15 @@ def make_demo_map(name: str, *, overwrite: bool = False) -> dict:
         perk_zone_center=(320, 0, 16),
         perk_zone_size=(896, 1024, 0),
         perk_margin=160,
-        # Arena wall buys: y=±492 (4 units into room from interior face;
-        # ±488 was further into room and STILL hidden, so try CLOSER to wall);
-        # z=8 to match starter height
+        # Arena wall buys: yaw FLIPPED 180° from previous attempt.
+        # Template SHOTGUN at west wall uses yaw=270 (gun faces +X into
+        # room). Same logic: south wall (y=-496 interior) needs gun
+        # facing +Y → yaw=0, NOT 180. North wall needs gun facing -Y →
+        # yaw=180, NOT 0. Previous yaw was projecting chalk onto the
+        # OUTER wall face (visible only via noclip).
         wall_buys=[
-            {"weapon": "smg_standard", "origin": (320, -492, 8), "angles": (0, 180, 0)},
-            {"weapon": "ar_standard",  "origin": (320, 492, 8),  "angles": (0, 0, 0)},
+            {"weapon": "smg_standard", "origin": (320, -494, 8), "angles": (0, 0, 0)},
+            {"weapon": "ar_standard",  "origin": (320, 494, 8),  "angles": (0, 180, 0)},
         ],
         spawner_origins=[(0, -460, 32), (700, 460, 32)],
         light_origins=[
@@ -177,7 +180,7 @@ def make_demo_map(name: str, *, overwrite: bool = False) -> dict:
     #     yaw=90 was confirmed correct by user — DO NOT touch
     #   - power switch: z=24, y=-232, yaw=180 — confirmed perfect by user
     zm.add_mystery_box(name, origin=(1024, 0, 16), angles=(0, 0, 0))
-    zm.add_pack_a_punch(name, origin=(1024, 216, 32), angles=(0, 90, 0))
+    zm.add_pack_a_punch(name, origin=(1024, 216, 40), angles=(0, 90, 0))
     zm.add_power_switch(name, origin=(1024, -232, 24), angles=(0, 180, 0))
     summary["steps"].append({"vault_features": ["mystery_box", "pack_a_punch", "power_switch"]})
 
