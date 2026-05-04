@@ -917,20 +917,36 @@ def add_buyable_door(
     door_name: str | None = None,
     slide_vector: tuple[float, float, float] | None = None,
     door_texture: str = "clip",
-    visible_texture: str | None = "t7_wood_planks_rustic",
+    door_model: str | None = "p7_zm_der_door_buy_std_onepiece",
+    door_model_yaw: float = 0.0,
+    door_model_z_offset: float = 0.0,
     trigger_inflate: float = 128.0,
 ) -> dict:
-    """Create a buyable door — a 2-entity recipe: a `script_brushmodel` for
-    the door geometry that slides away on purchase, and a `trigger_use` for
-    the player interaction. Pattern from `_prefabs/zm/zm_giant/geo/factory_doors.map`.
+    """Create a buyable door — Treyarch's full 3-entity pattern from
+    `_prefabs/zm/zm_giant/geo/factory_doors.map`:
+
+    1. `script_brushmodel` with `clip` texture (collision; invisible)
+    2. `script_model` with a door model (visible appearance) — same
+       targetname / DYNAMICPATH / script_string / script_vector as the
+       brushmodel so they slide together when bought
+    3. `trigger_use` (the buy interaction)
+
+    Default `door_model` is `p7_zm_der_door_buy_std_onepiece` (Treyarch's
+    standard one-piece buyable door). Other options seen in zm_giant:
+    `p7_zm_der_door_buy_med`, `p7_zm_der_door_buy_lrg_left/right` (paired
+    double-door panels), `p7_zm_der_door_buy_std_left/right`. Pass
+    `door_model=None` to skip the visible model (collision-only invisible door).
+
+    `door_model_yaw` rotates the model around Z; `door_model_z_offset`
+    raises/lowers the model relative to the door brush bottom (use this to
+    fine-tune model alignment with the brush).
 
     `script_flag` is the GSC flag set when the door is bought (e.g.
     "enter_warehouse"); zone init functions can listen on this flag to
     activate the gated zone.
 
-    `slide_vector` defaults to `(door_width, 0, 0)` so the door slides out
-    sideways by its own width when bought; pass an explicit vector to slide
-    differently (up, opposite direction, etc.).
+    `slide_vector` defaults to `(0, 0, -door_height)` so the door sinks
+    below the floor when bought.
 
     Pass `connects=("zone_a", "zone_b")` to auto-wire the door to the zone
     graph: a `zm_zonemgr::add_adjacent_zone()` call will be appended to the
@@ -970,23 +986,42 @@ def add_buyable_door(
             "spawnflags": "1",
         },
     )
-    # If `visible_texture` is set, the door uses ONLY that visible texture —
-    # no separate clip brush. Brushmodels are inherently solid for
-    # collision, so we don't need a clip brush for blocking. The buy
-    # prompt works because the trigger_use entity (with explicit origin
-    # and inflate=128) handles interaction independently of the door
-    # brush's texture.
-    #
-    # An earlier iteration paired clip + inset-visible brushes inside the
-    # same brushmodel, but the inset visible brush was culled (fully
-    # enclosed by the clip brush). Single-brush approach is simpler and
-    # actually visible.
-    #
-    # Pass `visible_texture=None` to fall back to clip-only invisible doors.
-    final_door_texture = visible_texture if visible_texture else door_texture
+    # Brushmodel uses `clip` (invisible solid) — Treyarch's pattern.
+    # The visible appearance comes from a separate script_model entity
+    # (added below). Earlier iterations tried visible textures on this
+    # brush but had culling issues; the script_model approach is what
+    # zm_giant's factory_doors.map uses.
     door_entity.brushes.append(
-        brushes.box_brush(door_mins, door_maxs, final_door_texture)
+        brushes.box_brush(door_mins, door_maxs, door_texture)
     )
+
+    # 1b. The visible door — script_model with a real Treyarch door asset.
+    # Same targetname / DYNAMICPATH / script_string / script_vector as
+    # the brushmodel so the framework moves both together when bought.
+    # Origin is at the door's bottom-center so the model sits on the floor.
+    door_model_entity = None
+    if door_model:
+        door_center_x = (door_mins[0] + door_maxs[0]) / 2
+        door_center_y = (door_mins[1] + door_maxs[1]) / 2
+        door_bottom_z = door_mins[2] + door_model_z_offset
+        door_model_entity = entities.add_entity(
+            mf,
+            "script_model",
+            origin=(door_center_x, door_center_y, door_bottom_z),
+            angles=(0.0, door_model_yaw, 0.0),
+            layer="000_Global/Special Items/Doors",
+            kvps={
+                "DYNAMICPATH": "1",
+                "model": door_model,
+                "script_string": "move",
+                "script_vector": f"{slide_vector[0]:g} {slide_vector[1]:g} {slide_vector[2]:g}",
+                "targetname": door_name,
+                "client_server": "ServerSide",
+                "modelscale": "1",
+                "shadow_casting": "1",
+                "spawnflags": "1",
+            },
+        )
 
     # 2. The trigger_use — slightly inflated bounds, textured "trigger"
     t_mins = (
@@ -1042,6 +1077,8 @@ def add_buyable_door(
 
     result = {
         "door_brushmodel_guid": door_entity.guid,
+        "door_model_guid": door_model_entity.guid if door_model_entity else None,
+        "door_model": door_model,
         "trigger_guid": trigger_entity.guid,
         "door_name": door_name,
         "script_flag": script_flag,
