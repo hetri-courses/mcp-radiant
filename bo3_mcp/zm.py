@@ -970,23 +970,23 @@ def add_buyable_door(
             "spawnflags": "1",
         },
     )
-    # The collision/interaction brush MUST use `clip` texture. Visible
-    # textures here break the buy-prompt trigger (confirmed by ~5 iterations
-    # of testing — clip is required for the framework's blocker logic).
-    door_entity.brushes.append(brushes.box_brush(door_mins, door_maxs, door_texture))
-
-    # Visible decoration brush: same script_brushmodel, so it slides
-    # together with the clip brush when the door is bought. Slightly
-    # inset from the clip brush so they don't z-fight on shared faces.
-    # Pass `visible_texture=None` to keep the door fully invisible (the
-    # original v0 behavior).
-    if visible_texture:
-        inset = 0.5
-        deco_mins = (door_mins[0] + inset, door_mins[1] + inset, door_mins[2] + inset)
-        deco_maxs = (door_maxs[0] - inset, door_maxs[1] - inset, door_maxs[2] - inset)
-        door_entity.brushes.append(
-            brushes.box_brush(deco_mins, deco_maxs, visible_texture)
-        )
+    # If `visible_texture` is set, the door uses ONLY that visible texture —
+    # no separate clip brush. Brushmodels are inherently solid for
+    # collision, so we don't need a clip brush for blocking. The buy
+    # prompt works because the trigger_use entity (with explicit origin
+    # and inflate=128) handles interaction independently of the door
+    # brush's texture.
+    #
+    # An earlier iteration paired clip + inset-visible brushes inside the
+    # same brushmodel, but the inset visible brush was culled (fully
+    # enclosed by the clip brush). Single-brush approach is simpler and
+    # actually visible.
+    #
+    # Pass `visible_texture=None` to fall back to clip-only invisible doors.
+    final_door_texture = visible_texture if visible_texture else door_texture
+    door_entity.brushes.append(
+        brushes.box_brush(door_mins, door_maxs, final_door_texture)
+    )
 
     # 2. The trigger_use — slightly inflated bounds, textured "trigger"
     t_mins = (

@@ -181,7 +181,7 @@ def make_demo_map(name: str, *, overwrite: bool = False) -> dict:
     #     yaw=90 was confirmed correct by user — DO NOT touch
     #   - power switch: z=24, y=-232, yaw=180 — confirmed perfect by user
     zm.add_mystery_box(name, origin=(1024, 0, 16), angles=(0, 0, 0))
-    zm.add_pack_a_punch(name, origin=(1024, 216, 40), angles=(0, 90, 0))
+    zm.add_pack_a_punch(name, origin=(1024, 216, 35), angles=(0, 90, 0))
     zm.add_power_switch(name, origin=(1024, -232, 24), angles=(0, 180, 0))
     summary["steps"].append({"vault_features": ["mystery_box", "pack_a_punch", "power_switch"]})
 
