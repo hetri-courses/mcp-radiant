@@ -917,6 +917,7 @@ def add_buyable_door(
     door_name: str | None = None,
     slide_vector: tuple[float, float, float] | None = None,
     door_texture: str = "clip",
+    visible_texture: str | None = "t7_wood_planks_rustic",
     trigger_inflate: float = 128.0,
 ) -> dict:
     """Create a buyable door — a 2-entity recipe: a `script_brushmodel` for
@@ -969,12 +970,23 @@ def add_buyable_door(
             "spawnflags": "1",
         },
     )
-    # Door brush uses visible texture on ALL 6 faces (no caulking). The
-    # caulk-non-interior-face convention applies to room walls (which face
-    # the void on one side), but doors face PLAYABLE space on both sides
-    # — players can approach from either room. Caulking faces of the door
-    # has been observed to break the buy-prompt trigger interaction.
+    # The collision/interaction brush MUST use `clip` texture. Visible
+    # textures here break the buy-prompt trigger (confirmed by ~5 iterations
+    # of testing — clip is required for the framework's blocker logic).
     door_entity.brushes.append(brushes.box_brush(door_mins, door_maxs, door_texture))
+
+    # Visible decoration brush: same script_brushmodel, so it slides
+    # together with the clip brush when the door is bought. Slightly
+    # inset from the clip brush so they don't z-fight on shared faces.
+    # Pass `visible_texture=None` to keep the door fully invisible (the
+    # original v0 behavior).
+    if visible_texture:
+        inset = 0.5
+        deco_mins = (door_mins[0] + inset, door_mins[1] + inset, door_mins[2] + inset)
+        deco_maxs = (door_maxs[0] - inset, door_maxs[1] - inset, door_maxs[2] - inset)
+        door_entity.brushes.append(
+            brushes.box_brush(deco_mins, deco_maxs, visible_texture)
+        )
 
     # 2. The trigger_use — slightly inflated bounds, textured "trigger"
     t_mins = (

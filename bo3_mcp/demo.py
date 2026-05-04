@@ -139,15 +139,16 @@ def make_demo_map(name: str, *, overwrite: bool = False) -> dict:
         perk_zone_center=(320, 0, 16),
         perk_zone_size=(896, 1024, 0),
         perk_margin=160,
-        # Arena wall buys: yaw FLIPPED 180° from previous attempt.
-        # Template SHOTGUN at west wall uses yaw=270 (gun faces +X into
-        # room). Same logic: south wall (y=-496 interior) needs gun
-        # facing +Y → yaw=0, NOT 180. North wall needs gun facing -Y →
-        # yaw=180, NOT 0. Previous yaw was projecting chalk onto the
-        # OUTER wall face (visible only via noclip).
+        # Arena wall buys: prefab origin RIGHT AT wall interior face
+        # (y=±496). Looking at spawnable_weapon_pistol_burst.map prefab:
+        # body brush at local Y=-8 to -1, chalk decal mesh at local Y=0.
+        # If origin is at wall surface, body sinks INTO wall thickness
+        # (invisible — fine), chalk decal is ON the wall surface.
+        # At y=-494 (2 in front of wall) the chalk floats off the wall
+        # and is hidden from inside view but visible via noclip.
         wall_buys=[
-            {"weapon": "smg_standard", "origin": (320, -494, 8), "angles": (0, 0, 0)},
-            {"weapon": "ar_standard",  "origin": (320, 494, 8),  "angles": (0, 180, 0)},
+            {"weapon": "smg_standard", "origin": (320, -496, 8), "angles": (0, 0, 0)},
+            {"weapon": "ar_standard",  "origin": (320, 496, 8),  "angles": (0, 180, 0)},
         ],
         spawner_origins=[(0, -460, 32), (700, 460, 32)],
         light_origins=[
