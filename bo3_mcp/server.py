@@ -321,19 +321,39 @@ def add_buyable_door(
     connects: list[str] | None = None,
     door_name: str | None = None,
     slide_vector: list[float] | None = None,
-    door_texture: str = "t7_wood_planks_rustic",
-    trigger_inflate: float = 8.0,
+    door_texture: str = "clip",
+    door_model: str | None = "p7_zm_der_door_buy_std_onepiece",
+    door_model_yaw: float = 0.0,
+    door_model_z_offset: float = 0.0,
+    trigger_inflate: float = 128.0,
 ) -> dict:
-    """Create a buyable door (2-entity recipe: script_brushmodel + trigger_use).
+    """Create a buyable door — Treyarch's 3-entity pattern from
+    `_prefabs/zm/zm_giant/geo/factory_doors.map`:
+
+    1. `script_brushmodel` with `clip` texture (collision; invisible)
+    2. `script_model` with a door asset (visible appearance) — same
+       targetname / DYNAMICPATH / script_string / script_vector as the
+       brushmodel so they slide together when bought
+    3. `trigger_use` (the buy interaction)
+
     `script_flag` is the GSC flag set when bought (e.g. "enter_warehouse").
+
+    `door_texture` is the brushmodel face texture. Default `"clip"` makes
+    the brushmodel invisible-but-solid (Treyarch's pattern); the visible
+    appearance comes from `door_model`. Passing a visible texture like
+    `"t7_wood_planks_rustic"` is likely to be culled in-game (use a model
+    instead).
+
+    `door_model` is the visible script_model asset. Default is Treyarch's
+    standard one-piece buyable door. Pass `None` to skip the visible model
+    (collision-only invisible door — useful for invisible barriers).
+    `door_model_yaw` rotates around Z; `door_model_z_offset` raises/lowers
+    the model relative to the door brush bottom.
 
     Pass `connects=["zone_a", "zone_b"]` to auto-wire the door into the zone
     graph — adds `zm_zonemgr::add_adjacent_zone(...)` to the GSC's zone_init
     function so buying the door activates the gated zone. Without `connects`,
-    you get door entities but flag handling is up to you in the GSC.
-
-    Default slide direction is +X by the door's width. `door_name` is auto-
-    derived from `script_flag` if not given."""
+    you get door entities but flag handling is up to you in the GSC."""
     if connects is not None and len(connects) != 2:
         raise ValueError(f"connects must be a 2-element list; got {connects}")
     connects_tuple = tuple(connects) if connects else None
@@ -347,6 +367,9 @@ def add_buyable_door(
         door_name=door_name,
         slide_vector=_xyz(slide_vector) if slide_vector else None,
         door_texture=door_texture,
+        door_model=door_model,
+        door_model_yaw=door_model_yaw,
+        door_model_z_offset=door_model_z_offset,
         trigger_inflate=trigger_inflate,
     )
 
