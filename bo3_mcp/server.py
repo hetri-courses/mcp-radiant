@@ -3,6 +3,8 @@ Code (or any MCP client) can drive map authoring and builds."""
 
 from __future__ import annotations
 
+import importlib
+
 from mcp.server.fastmcp import FastMCP
 
 from . import brushes, demo, entities, geometry, mapfile, paths, pipeline, scaffold, textures, zm
@@ -14,6 +16,63 @@ def _xyz(values: list[float]) -> tuple[float, float, float]:
     if len(values) != 3:
         raise ValueError(f"expected 3 values, got {len(values)}")
     return float(values[0]), float(values[1]), float(values[2])
+
+
+# --- Dev: hot-reload --------------------------------------------------------
+
+
+@mcp.tool()
+def _reload_mcp_modules() -> dict:
+    """Re-import all bo3_mcp submodules in dependency order so edits to the
+    MCP source code take effect WITHOUT restarting Claude Desktop.
+
+    Use this after editing any file in bo3_mcp/ (zm.py, demo.py, geometry.py
+    etc.) — calls to MCP tools on the next request will use the freshly
+    imported code. Without this (or a Claude Desktop restart), Python's
+    module cache holds the old code and edits silently no-op.
+
+    Reloads in topological order (leaves first) so each module sees fresh
+    versions of the modules it imports from. Server.py itself is NOT
+    reloaded (would re-register tools, breaking the FastMCP runtime); but
+    server.py uses `from . import zm` style — so its `zm.add_perk(...)`
+    lookups happen at call time and pick up the reloaded module."""
+    # Order: leaves first, then modules that depend on them.
+    reload_order = [
+        "bo3_mcp.brushes",      # primitives, no internal deps
+        "bo3_mcp.paths",        # path resolution, no internal deps
+        "bo3_mcp.mapfile",      # parser/serializer, depends on stdlib only
+        "bo3_mcp.textures",     # catalog, no internal deps
+        "bo3_mcp.entities",     # depends on mapfile
+        "bo3_mcp.gsc",          # depends on stdlib only
+        "bo3_mcp.geometry",     # depends on brushes, mapfile, paths, entities
+        "bo3_mcp.zm",           # depends on brushes, entities, geometry, gsc, mapfile, paths
+        "bo3_mcp.scaffold",     # depends on paths, mapfile
+        "bo3_mcp.pipeline",     # depends on paths
+        "bo3_mcp.demo",         # depends on geometry, scaffold, zm
+    ]
+    import sys
+
+    reloaded: list[str] = []
+    skipped: list[dict] = []
+    for module_name in reload_order:
+        if module_name not in sys.modules:
+            skipped.append({"module": module_name, "reason": "not loaded"})
+            continue
+        try:
+            importlib.reload(sys.modules[module_name])
+            reloaded.append(module_name)
+        except Exception as e:
+            skipped.append({"module": module_name, "reason": f"{type(e).__name__}: {e}"})
+    return {
+        "reloaded": reloaded,
+        "reloaded_count": len(reloaded),
+        "skipped": skipped,
+        "note": (
+            "Subsequent MCP tool calls will use the freshly reloaded code. "
+            "If you edited server.py itself (not just submodules), a full "
+            "Claude Desktop restart is still required."
+        ),
+    }
 
 
 # --- Map inspection --------------------------------------------------------
