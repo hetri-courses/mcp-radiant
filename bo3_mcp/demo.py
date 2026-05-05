@@ -90,17 +90,22 @@ def make_demo_map(name: str, *, overwrite: bool = False) -> dict:
     summary["steps"].append({"zones_registered": 3})
 
     # 4. Buyable doors (auto-wire to zone graph via `connects`).
+    # Both doors are thin on X (16 units) — the doorway opens N-S along Y.
+    # The default model orientation faces along X so the broad face shows
+    # sideways. yaw=90 rotates to face along Y (correct for E-W doorways).
     zm.add_buyable_door(
         name,
         door_mins=(-128, -40, 16), door_maxs=(-112, 40, 128),
         cost=500, script_flag="enter_arena",
         connects=("start_zone", "arena_zone"),
+        door_model_yaw=90,
     )
     zm.add_buyable_door(
         name,
         door_mins=(768, -40, 16), door_maxs=(784, 40, 128),
         cost=1500, script_flag="enter_vault",
         connects=("arena_zone", "vault_zone"),
+        door_model_yaw=90,
     )
     summary["steps"].append({"doors_added": 2})
 
@@ -181,7 +186,7 @@ def make_demo_map(name: str, *, overwrite: bool = False) -> dict:
     #     yaw=90 was confirmed correct by user — DO NOT touch
     #   - power switch: z=24, y=-232, yaw=180 — confirmed perfect by user
     zm.add_mystery_box(name, origin=(1024, 0, 16), angles=(0, 0, 0))
-    zm.add_pack_a_punch(name, origin=(1024, 216, 35), angles=(0, 90, 0))
+    zm.add_pack_a_punch(name, origin=(1024, 216, 32), angles=(0, 90, 0))
     zm.add_power_switch(name, origin=(1024, -232, 24), angles=(0, 180, 0))
     summary["steps"].append({"vault_features": ["mystery_box", "pack_a_punch", "power_switch"]})
 
