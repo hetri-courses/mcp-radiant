@@ -46,13 +46,20 @@ def make_demo_map(name: str, *, overwrite: bool = False) -> dict:
     summary["steps"].append({"scaffold": {"created": len(scaffolded["created"])}})
 
     # 2. Carve three rooms aligned along the X axis with matching doorways:
-    #    start  [-512..-128, -256..256, 0..256]    east doorway at y=0
+    #    start  [-512..-128, -256..256, 0..256]    east doorway + N/S windows
     #    arena  [-128.. 768, -512..512, 0..384]    west + east doorways at y=0
     #    vault  [ 768..1280, -256..256, 0..256]    west doorway at y=0
+    # start_zone has window openings on north + south walls (64w x 64h, bottom
+    # at z=64 = waist height) — these are where zombies will rise outside and
+    # walk through the barricade boards.
     geometry.carve_room_with_openings(
         name,
         mins=(-512, -256, 0), maxs=(-128, 256, 256),
-        openings=[{"side": "east", "width": 80, "height": 112}],
+        openings=[
+            {"side": "east", "width": 80, "height": 112},
+            {"side": "south", "width": 64, "height": 64, "bottom": 48},
+            {"side": "north", "width": 64, "height": 64, "bottom": 48},
+        ],
         wall_thickness=16,
     )
     geometry.carve_room_with_openings(
@@ -124,18 +131,32 @@ def make_demo_map(name: str, *, overwrite: bool = False) -> dict:
     # on the interior wall face.
     #
     # start_zone — pistol wall buy on WEST wall (interior face x=-496)
-    # z=8 (was 16, too high per user; chalk decal extends UP from origin)
+    # No spawner_origins — zombies come through the barricade windows below.
     zm.furnish_zone(
         name, "start_zone",
         wall_buys=[
             {"weapon": "pistol_burst", "origin": (-494, -100, 8), "angles": (0, 270, 0)},
         ],
-        spawner_origins=[(-460, -200, 32), (-460, 200, 32)],
         light_origins=[(-320, 0, 200)],
         light_color=(1.0, 0.95, 0.85),  # warm white
         light_radius=320, light_stops=4.0,
     )
-    summary["steps"].append({"start_zone_furnished": True})
+    # Barricade windows on north + south walls of start_zone. Origins are at
+    # the WALL interior face (south interior y=-240, north interior y=240),
+    # at the same x as each carved window opening (centered at x=-320), and
+    # z=16 (floor surface — barricade prefab origin is its base). yaw faces
+    # outward (south wall → -Y, yaw=180; north wall → +Y, yaw=0).
+    zm.add_zombie_window(
+        name,
+        origin=(-320, -240, 16), yaw=180,
+        zone_name="start_zone",
+    )
+    zm.add_zombie_window(
+        name,
+        origin=(-320, 240, 16), yaw=0,
+        zone_name="start_zone",
+    )
+    summary["steps"].append({"start_zone_furnished": True, "windows": 2})
 
     # arena_zone — 4 perks at corners, 2 wall buys, 2 spawners, 4 lights
     zm.furnish_zone(
@@ -155,7 +176,9 @@ def make_demo_map(name: str, *, overwrite: bool = False) -> dict:
             {"weapon": "smg_standard", "origin": (320, -496, 8), "angles": (0, 0, 0)},
             {"weapon": "ar_standard",  "origin": (320, 496, 8),  "angles": (0, 180, 0)},
         ],
-        spawner_origins=[(0, -460, 32), (700, 460, 32)],
+        # Spawners at floor surface z=16 (was z=32 — too high, zombies
+        # spawned floating above the navmesh and got stuck on the spawner cube)
+        spawner_origins=[(0, -460, 16), (700, 460, 16)],
         light_origins=[
             (100, -240, 320), (100, 240, 320),
             (540, -240, 320), (540, 240, 320),
@@ -169,7 +192,8 @@ def make_demo_map(name: str, *, overwrite: bool = False) -> dict:
     # are handled separately below since they're not in furnish_zone.
     zm.furnish_zone(
         name, "vault_zone",
-        spawner_origins=[(810, -200, 32), (810, 200, 32)],
+        # Spawners at floor surface z=16 (was z=32 — too high)
+        spawner_origins=[(810, -200, 16), (810, 200, 16)],
         light_origins=[(1024, 0, 200)],
         light_color=(1.0, 0.85, 0.6),  # warm yellow
         light_radius=384, light_stops=4.5,
@@ -186,7 +210,7 @@ def make_demo_map(name: str, *, overwrite: bool = False) -> dict:
     #     yaw=90 was confirmed correct by user — DO NOT touch
     #   - power switch: z=24, y=-232, yaw=180 — confirmed perfect by user
     zm.add_mystery_box(name, origin=(1024, 0, 16), angles=(0, 0, 0))
-    zm.add_pack_a_punch(name, origin=(1024, 216, 30), angles=(0, 90, 0))
+    zm.add_pack_a_punch(name, origin=(1024, 216, 20), angles=(0, 90, 0))
     zm.add_power_switch(name, origin=(1024, -232, 24), angles=(0, 180, 0))
     summary["steps"].append({"vault_features": ["mystery_box", "pack_a_punch", "power_switch"]})
 

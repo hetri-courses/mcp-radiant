@@ -307,11 +307,60 @@ def add_barricade(
     """Place a wood-board zombie barricade — the classic chokepoint with
     breakable boards that zombies tear off and players repair. Drops a
     `_prefabs/zm/zm_core/barricade_reciever_wood` reference. Set
-    `hide_pieces=true` for the variant where torn boards despawn."""
+    `hide_pieces=true` for the variant where torn boards despawn.
+
+    For the FULL barricade-window pattern (barricade + matching outside-wall
+    riser spawn struct linked by script_string), use `add_zombie_window`
+    instead — it does both placements in one call so zombies actually rise
+    OUTSIDE the wall and walk through the boards."""
     return zm.add_barricade(
         map_name,
         _xyz(origin),
         _xyz(angles) if angles else (0.0, 0.0, 0.0),
+        hide_pieces=hide_pieces,
+    )
+
+
+@mcp.tool()
+def add_zombie_window(
+    map_name: str,
+    origin: list[float],
+    yaw: float,
+    zone_name: str,
+    spawn_offset: float = 96.0,
+    script_string: str | None = None,
+    hide_pieces: bool = False,
+) -> dict:
+    """Complete window-spawn setup in one call: barricade prefab at the wall +
+    matching exterior riser spawn struct ~96 units further out, both linked
+    by `script_string`. Replicates zm_template_test's "receiver_set_entry_a"
+    pattern.
+
+    Use this instead of `add_zombie_spawner` when you want zombies to rise
+    OUTSIDE the wall and walk through the boards (the canonical zombie-map
+    feel) — vs. spawning them inside the room where they often glitch on
+    the spawner cube without proper navmesh access.
+
+    Args:
+        origin: barricade prefab origin — at the wall opening, z=floor surface
+            (z=16 for our scaffolds).
+        yaw: 0 (north wall, ext faces +Y) / 90 (east, +X) / 180 (south, -Y) /
+            270 (west, -X). Must be axis-aligned.
+        zone_name: spawn struct gets `targetname "<zone>_spawners"`.
+        spawn_offset: distance OUTSIDE the wall for the riser. Default 96.
+        script_string: shared identifier; auto-generated if omitted.
+        hide_pieces: use the no-debris barricade variant.
+
+    Note: barricade-style spawners require `seal_exterior(...)` (or
+    `add_lighting_kit`) to wrap the playable area. Without it, the spawn
+    struct sits in unbounded void and cod2map64 reports a leak."""
+    return zm.add_zombie_window(
+        map_name,
+        _xyz(origin),
+        yaw,
+        zone_name=zone_name,
+        spawn_offset=spawn_offset,
+        script_string=script_string,
         hide_pieces=hide_pieces,
     )
 

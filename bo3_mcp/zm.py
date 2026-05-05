@@ -592,6 +592,130 @@ def add_barricade(
     }
 
 
+# Yaw → unit outward vector for barricade exterior side. yaw=0 outward
+# faces +Y; rotates clockwise from there (per add_barricade convention).
+_BARRICADE_OUTWARD: dict[int, tuple[float, float]] = {
+    0:   (0, 1),    # +Y
+    90:  (1, 0),    # +X
+    180: (0, -1),   # -Y
+    270: (-1, 0),   # -X
+}
+
+
+def add_zombie_window(
+    map_name: str,
+    origin: tuple[float, float, float],
+    yaw: float,
+    *,
+    zone_name: str,
+    spawn_offset: float = 96.0,
+    script_string: str | None = None,
+    hide_pieces: bool = False,
+) -> dict:
+    """Complete window-spawn setup in one call: barricade prefab + matching
+    exterior spawn-location script_struct (the riser the framework uses to
+    rise zombies from the ground outside, which then walk through the boards).
+
+    This is the pattern from `zm_template_test.map`:
+      - barricade prefab at the wall, with `script_string` "tag"
+      - script_struct at `tag` AHEAD of the wall (in the prefab's outward
+        direction), with `targetname "<zone>_spawners"`,
+        `script_noteworthy "riser_location"`, matching `script_string`
+
+    Without this pairing, generic in-room spawners (like add_zombie_spawner
+    without barricade context) tend to spawn zombies on top of the spawner
+    cube, where they can't path to the navmesh — they glitch in place until
+    they die. With a barricade window, zombies rise OUTSIDE the wall, walk
+    to the barricade, tear boards off, and enter through the opening. That's
+    the canonical zombie-map experience.
+
+    Args:
+        origin: where the barricade prefab sits (typically at the wall opening,
+            z at floor surface — z=16 for our scaffolded maps).
+        yaw: 0/90/180/270 — must match the wall the barricade is mounted on.
+            yaw=0 → barricade exterior faces +Y (north wall); 90 → +X (east);
+            180 → -Y (south); 270 → -X (west).
+        zone_name: the zone this window feeds. Spawn struct gets
+            `targetname "<zone>_spawners"`.
+        spawn_offset: how far OUTSIDE the wall (in the outward direction) the
+            spawn riser sits. Default 96 puts it well clear of the wall thickness.
+            zm_template_test uses ~144 between barricade and spawn struct.
+        script_string: optional shared identifier linking barricade to spawn
+            struct. Auto-generated from origin if not provided.
+        hide_pieces: same as add_barricade — use the no-debris prefab variant.
+
+    Remember: barricade-style spawners require `seal_exterior(...)` to wrap
+    the playable area, otherwise cod2map64 reports a leak (the spawn struct
+    sits in unbounded void). add_lighting_kit calls seal_exterior internally."""
+    yaw_int = int(round(yaw)) % 360
+    if yaw_int not in _BARRICADE_OUTWARD:
+        raise ValueError(
+            f"yaw must be 0, 90, 180, or 270 (axis-aligned wall); got {yaw}"
+        )
+    if script_string is None:
+        # Stable per-window identifier (so the same call always produces the
+        # same script_string — useful for round-tripping / re-runs).
+        script_string = f"window_{zone_name}_{int(origin[0])}_{int(origin[1])}"
+
+    canonical_zone = zone_name if zone_name.endswith("_zone") else f"{zone_name}_zone"
+
+    # 1. Barricade prefab — placed AT the wall opening
+    target = paths.map_source(map_name)
+    mf = _load(target)
+    prefab = (
+        "barricade_reciever_wood_hide_pieces"
+        if hide_pieces
+        else "barricade_reciever_wood"
+    )
+    barricade_entity = entities.add_entity(
+        mf,
+        "misc_prefab",
+        origin=origin,
+        angles=(0.0, float(yaw_int), 0.0),
+        layer="000_Global/Special Items/Barricades",
+        kvps={
+            "model": paths.core_prefab_ref(prefab),
+            "script_string": script_string,
+        },
+    )
+
+    # 2. Riser spawn-location struct — placed OUTSIDE the wall in outward dir
+    dx, dy = _BARRICADE_OUTWARD[yaw_int]
+    spawn_origin = (
+        origin[0] + dx * spawn_offset,
+        origin[1] + dy * spawn_offset,
+        origin[2],
+    )
+    # The spawn struct faces back TOWARD the wall (zombies face the way they're
+    # going — toward the barricade, not away from it).
+    spawn_yaw = (yaw_int + 180) % 360
+    spawn_struct = entities.add_entity(
+        mf,
+        "script_struct",
+        origin=spawn_origin,
+        angles=(0.0, float(spawn_yaw), 0.0),
+        layer="000_Global/Enemies/Zombies",
+        kvps={
+            "script_noteworthy": "riser_location",
+            "script_string": script_string,
+            "targetname": f"{canonical_zone}_spawners",
+            "_color": "1 0 0",
+        },
+    )
+    _save(mf, target)
+
+    return {
+        "barricade_guid": barricade_entity.guid,
+        "spawn_struct_guid": spawn_struct.guid,
+        "barricade_origin": origin,
+        "spawn_origin": spawn_origin,
+        "yaw": yaw_int,
+        "script_string": script_string,
+        "zone": canonical_zone,
+        "target_file": str(target),
+    }
+
+
 # --- Chalk decals (wall-buy gun outlines) ----------------------------------
 
 
