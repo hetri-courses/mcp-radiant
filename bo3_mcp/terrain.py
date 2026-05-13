@@ -565,8 +565,12 @@ def start_terrain_diffusion_server(
             f"  cd {repo_dir} && pip install -r requirements.txt"
         )
 
+    # Call the inference api submodule directly to BYPASS the heavy
+    # `__main__.py` which imports training-only modules (rasterio,
+    # cartopy, earthengine-api, optuna, wandb...) at the top. Direct
+    # module path means we only need inference deps installed.
     cmd = [
-        sys.executable, "-m", "terrain_diffusion", "api", model,
+        sys.executable, "-m", "terrain_diffusion.inference.api", model,
         "--port", str(port),
     ]
     if device:
