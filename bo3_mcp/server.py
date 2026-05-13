@@ -171,6 +171,37 @@ def delete_entity(map_name: str, guid: str) -> dict:
 
 
 @mcp.tool()
+def validate_playable_contract(
+    map_name: str,
+    build_summary: dict | None = None,
+) -> dict:
+    """Independently verify a playable map matches its declared invariants by
+    inspecting the actual generated files. Use AFTER `build_full` to confirm
+    the artifacts and entities match what `make_playable_zombie_foundation`
+    claimed in its `playable_contract` output — does NOT trust the contract
+    dict, re-derives every fact from the .map / .gsc / .d3dbsp / .led / .hkt / .ff.
+
+    Catches silent regressions like missing lighting kit entities, unlinked
+    spawn structs, floating spawners (z > 32), preview-lighting fallback in
+    the linker output, and missing materials.
+
+    Returns:
+        {
+          "overall": "PASS" | "FAIL",
+          "passed": int, "failed": int, "skipped": int,
+          "checks": [{"name", "status", "detail"}, ...],
+          "notes": [str]  # e.g. missing-material warnings from compile log
+        }
+
+    If `build_summary` (the dict returned by `build_full`) is provided, the
+    validator additionally scans the linker stage output for "Falling back to
+    preview lighting" and the compile stage for missing materials. Without
+    `build_summary`, those checks are skipped but the file-existence checks
+    still confirm the artifacts were produced."""
+    return playable.validate_playable_contract(map_name, build_summary=build_summary)
+
+
+@mcp.tool()
 def make_playable_zombie_foundation(
     map_name: str,
     layout: str = "three_zone",
