@@ -1125,6 +1125,98 @@ def generate_terrain(
     )
 
 
+@mcp.tool()
+def generate_terrain_diffusion(
+    map_name: str,
+    region: list[int] | None = None,
+    scale: int = 1,
+    origin: list[float] | None = None,
+    cell_size: float = 64.0,
+    sea_level_m: float = 0.0,
+    world_units_per_meter: float = 0.3,
+    server_url: str = "http://localhost:8000",
+    height_bands: list[list] | None = None,
+    merge_strips: bool = True,
+    max_brushes: int = 32768,
+) -> dict:
+    """Generate terrain via xandergos/terrain-diffusion — a diffusion-model
+    backed terrain generator (Treyarch-quality vs. our value-noise baseline).
+
+    Requires the terrain-diffusion API server running locally. Start it
+    with `start_terrain_diffusion_server`, or manually:
+        cd D:/projects/terrain-diffusion
+        python -m terrain_diffusion api xandergos/terrain-diffusion-30m
+
+    See https://github.com/xandergos/terrain-diffusion for install. First
+    run downloads ~1-2 GB of model weights from Hugging Face Hub.
+
+    Args:
+        region: [i1, j1, i2, j2] pixel bbox in model output space.
+            Width = i2-i1, height = j2-j1 = grid dimensions.
+            Default [0, 0, 128, 128] (128x128 = 16384 cells).
+        scale: resolution multiplier (1, 2, 4, 8). 1 = 30m/pixel on the
+            30m model, 90m/pixel on 90m. Higher = finer detail.
+        origin: world (i1, j1) corner in BO3 units. Default (0,0,0).
+        cell_size: XY extent per heightmap pixel in BO3 units. Default 64.
+        sea_level_m: model elevation (meters) that maps to origin.z.
+            Anything below becomes void/skipped. Default 0.
+        world_units_per_meter: BO3 unit scale per meter of real elevation.
+            0.3 = scaled mountains (100m → 30 BO3 units, walkable).
+            1.0 = realistic but often too tall for indoor gameplay.
+        server_url: terrain-diffusion API endpoint.
+        height_bands: per-elevation textures `[[top_z, "tex"], ...]`. If
+            None, auto-bands by observed elevation range (dirt/rock/crag).
+        merge_strips: collapse same-height X-runs (default True).
+        max_brushes: safety budget.
+
+    Returns: brush counts + model metadata (min/max elevation observed)."""
+    bands: list[tuple[float, str]] | None = None
+    if height_bands is not None:
+        bands = [(float(b[0]), str(b[1])) for b in height_bands]
+    return terrain.generate_terrain_diffusion(
+        map_name,
+        region=tuple(region) if region else (0, 0, 128, 128),  # type: ignore[arg-type]
+        scale=scale,
+        origin=(origin[0], origin[1], origin[2]) if origin else (0.0, 0.0, 0.0),
+        cell_size=cell_size,
+        sea_level_m=sea_level_m,
+        world_units_per_meter=world_units_per_meter,
+        server_url=server_url,
+        height_bands=bands,
+        merge_strips=merge_strips,
+        max_brushes=max_brushes,
+    )
+
+
+@mcp.tool()
+def start_terrain_diffusion_server(
+    model: str = "xandergos/terrain-diffusion-30m",
+    port: int = 8000,
+    device: str | None = None,
+    repo_dir: str = "D:/projects/terrain-diffusion",
+    wait_for_ready: bool = True,
+    ready_timeout: float = 300.0,
+) -> dict:
+    """Spawn the terrain-diffusion REST API as a background process. First
+    run downloads model weights (~1-2 GB) — can take 1-3 minutes; this
+    function polls until the server is ready by default.
+
+    Args:
+        model: HF model id. Options: `xandergos/terrain-diffusion-30m`
+            (default, finer for games), `xandergos/terrain-diffusion-90m`
+            (broader, more realistic worldbuilding).
+        port: Flask bind port (default 8000).
+        device: "cuda" / "cpu" / None (auto-detect). CPU works but is
+            many times slower.
+        repo_dir: path to cloned terrain-diffusion repo.
+        wait_for_ready: poll until the server responds (default True).
+        ready_timeout: max seconds to wait for readiness."""
+    return terrain.start_terrain_diffusion_server(
+        model=model, port=port, device=device, repo_dir=repo_dir,
+        wait_for_ready=wait_for_ready, ready_timeout=ready_timeout,
+    )
+
+
 # --- Build chain -----------------------------------------------------------
 
 

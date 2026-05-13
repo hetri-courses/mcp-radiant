@@ -38,7 +38,14 @@ For exterior terrain, prefer base_z=0 so terrain sits at the same
 from __future__ import annotations
 
 import math
+import os
 import random
+import struct
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
 from typing import Sequence
 
 from . import brushes, geometry, mapfile, paths
@@ -338,3 +345,286 @@ def generate_terrain(
         # ~50% of those after merge.
         max_brushes=16384,
     )
+
+
+# --- ML backend: xandergos/terrain-diffusion via REST API ------------------
+
+
+DEFAULT_TD_SERVER = "http://localhost:8000"
+
+
+def fetch_terrain_diffusion_region(
+    i1: int, j1: int, i2: int, j2: int,
+    *,
+    scale: int = 1,
+    server_url: str = DEFAULT_TD_SERVER,
+    timeout: float = 180.0,
+) -> tuple[list[list[float]], dict]:
+    """Hit the xandergos/terrain-diffusion REST API and return a heightmap
+    region in METERS, plus parsed climate channels.
+
+    The server must be running locally — start it with:
+        python -m terrain_diffusion api xandergos/terrain-diffusion-30m
+
+    See https://github.com/xandergos/terrain-diffusion for install +
+    weight-download instructions. The server binds to localhost:8000 by
+    default.
+
+    Args:
+        i1, j1, i2, j2: bounding box in target-resolution pixel coords.
+            (i,j) = (x,y) — `i1,j1` is top-left, `i2,j2` is bottom-right.
+            Width = i2-i1, height = j2-j1. Each pixel covers `90/scale`
+            meters on the 90m model, `30/scale` on the 30m model.
+        scale: integer multiplier vs base resolution. 1=base, 2=2x, 4=4x.
+        server_url: base URL of the terrain-diffusion REST API server.
+        timeout: HTTP timeout in seconds. Diffusion sampling on CPU can
+            take minutes for large regions.
+
+    Returns:
+        (heightmap, meta) where:
+        - heightmap: 2D list of floats, dimensions (j2-j1, i2-i1). Values
+          are elevation in METERS (floored, signed). Negative values are
+          ocean/below-sea-level. Pass to `heightmap_to_brushes` with an
+          appropriate `height_scale` to convert to BO3 world units.
+        - meta: dict with `width`, `height`, `n_climate_channels`, raw
+          `climate` bytes (for advanced use).
+
+    Raises ConnectionError if the server isn't reachable — typically means
+    you haven't started it, or it's still loading the model weights."""
+    width = i2 - i1
+    height = j2 - j1
+    if width <= 0 or height <= 0:
+        raise ValueError(f"empty region: i1={i1}, i2={i2}, j1={j1}, j2={j2}")
+    if width * height > 2048 * 2048:
+        raise ValueError(
+            f"region {width}x{height} is too large; the server will OOM. "
+            "Use scale<8 or split into tiles."
+        )
+
+    url = (f"{server_url.rstrip('/')}/terrain"
+           f"?i1={i1}&j1={j1}&i2={i2}&j2={j2}&scale={scale}")
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            data = resp.read()
+    except urllib.error.URLError as e:
+        raise ConnectionError(
+            f"Couldn't reach terrain-diffusion API at {server_url}: {e}. "
+            "Did you start the server? Try:\n"
+            "  python -m terrain_diffusion api xandergos/terrain-diffusion-30m\n"
+            "Then wait for model loading to finish before retrying."
+        ) from e
+
+    # Response layout:
+    #   elevation: int16 little-endian, height*width*2 bytes
+    #   climate:   float32 little-endian interleaved (h, w, 4 channels)
+    elev_bytes = height * width * 2
+    if len(data) < elev_bytes:
+        raise ValueError(
+            f"server returned {len(data)} bytes but elevation alone needs "
+            f"{elev_bytes}. Did the request fail silently?"
+        )
+    heightmap: list[list[float]] = []
+    for y in range(height):
+        row_offset = y * width * 2
+        row = list(struct.unpack_from(f"<{width}h", data, row_offset))
+        heightmap.append([float(v) for v in row])
+
+    climate_bytes = data[elev_bytes:]
+    return heightmap, {
+        "width": width,
+        "height": height,
+        "elev_byte_count": elev_bytes,
+        "climate_byte_count": len(climate_bytes),
+        "n_climate_channels": 4,  # temp, t_season, precip, p_cv
+        "climate_raw": climate_bytes,
+        "min_elev_m": min(min(r) for r in heightmap),
+        "max_elev_m": max(max(r) for r in heightmap),
+    }
+
+
+def generate_terrain_diffusion(
+    map_name: str,
+    *,
+    region: tuple[int, int, int, int] = (0, 0, 128, 128),
+    scale: int = 1,
+    origin: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    cell_size: float = 64.0,
+    sea_level_m: float = 0.0,
+    world_units_per_meter: float = 0.3,
+    server_url: str = DEFAULT_TD_SERVER,
+    height_bands: list[tuple[float, str]] | None = None,
+    merge_strips: bool = True,
+    max_brushes: int = 32768,
+) -> dict:
+    """Generate BO3 terrain using xandergos/terrain-diffusion as the heightmap
+    source. Hits the REST API, converts meters → BO3 inches, places brushes.
+
+    Args:
+        region: (i1, j1, i2, j2) pixel-coordinate bbox in the model's
+            output space. (j2-j1) = grid rows, (i2-i1) = grid columns.
+            Default 128×128 = 16384 cells, fast to sample but plenty
+            detailed.
+        scale: resolution multiplier (1 = base, 2 = 2x, 4 = 4x).
+        origin: world position of the (i1, j1) corner in BO3 units.
+            Z is the base elevation that maps to sea_level_m.
+        cell_size: XY extent per heightmap pixel in BO3 units.
+        sea_level_m: meters from the model's output that map to origin.z
+            in world units. Elevations below this become void (no brush).
+        world_units_per_meter: how many BO3 inches one meter of real-world
+            elevation maps to. 0.3 = scaled-down realistic mountains
+            (a 100m hill becomes 30 BO3 units). 1.0 ≈ 1:1 but most BO3
+            elevations are tens of meters tall, so 0.3-0.5 reads well.
+        server_url: terrain-diffusion API URL (default localhost:8000).
+        height_bands: per-elevation textures `[(top_z, "tex"), ...]`.
+            Defaults to a wasteland palette.
+        merge_strips: collapse same-height X-runs (recommended True).
+        max_brushes: safety budget.
+
+    Returns: dict from heightmap_to_brushes plus terrain-diffusion meta
+    (min/max elevation, climate channel counts)."""
+    i1, j1, i2, j2 = region
+    heightmap_m, meta = fetch_terrain_diffusion_region(
+        i1, j1, i2, j2, scale=scale, server_url=server_url
+    )
+
+    # Convert meters → BO3 units, subtract sea level, clamp negatives → 0.
+    scaled: list[list[float]] = []
+    for row in heightmap_m:
+        scaled_row = []
+        for m in row:
+            world_z = (m - sea_level_m) * world_units_per_meter
+            scaled_row.append(max(0.0, world_z))
+        scaled.append(scaled_row)
+
+    if height_bands is None:
+        # Auto-band based on observed elevation range
+        oz = origin[2]
+        max_z = max((max(r) for r in scaled), default=0.0)
+        if max_z > 0:
+            height_bands = [
+                (oz + max_z * 0.25, "t7_concrete_pebbles_cracked"),  # low: shore/dirt
+                (oz + max_z * 0.65, "t7_concrete_wall_dark_01"),     # mid: rock
+                (oz + max_z * 1.5,  "t7_concrete_bare_dark_01_wet"), # high: snowcap-ish
+            ]
+
+    result = heightmap_to_brushes(
+        map_name, scaled,
+        origin=origin,
+        cell_size=cell_size,
+        height_scale=1.0,  # heightmap is already in world units
+        height_bands=height_bands,
+        skip_below=0.0,
+        merge_strips=merge_strips,
+        max_brushes=max_brushes,
+    )
+    result["source"] = "terrain-diffusion"
+    result["model_meta"] = {
+        "region_pixels": (i2 - i1, j2 - j1),
+        "scale": scale,
+        "min_elev_m": meta["min_elev_m"],
+        "max_elev_m": meta["max_elev_m"],
+        "world_units_per_meter": world_units_per_meter,
+        "sea_level_m": sea_level_m,
+    }
+    return result
+
+
+def start_terrain_diffusion_server(
+    *,
+    model: str = "xandergos/terrain-diffusion-30m",
+    port: int = 8000,
+    device: str | None = None,
+    repo_dir: str = "D:/projects/terrain-diffusion",
+    wait_for_ready: bool = True,
+    ready_timeout: float = 300.0,
+) -> dict:
+    """Spawn the terrain-diffusion REST API server as a background process.
+
+    First-run takes 1-3 minutes (model weights download from Hugging Face
+    Hub + loading into VRAM). Subsequent runs are seconds.
+
+    Args:
+        model: HF model identifier. Choices the repo ships:
+            - xandergos/terrain-diffusion-30m (recommended for games)
+            - xandergos/terrain-diffusion-90m (realistic worldbuilding)
+        port: where the Flask server binds.
+        device: "cuda" / "cpu" / None (auto). CPU works but is much
+            slower (minutes per region instead of seconds).
+        repo_dir: filesystem path to the cloned terrain-diffusion repo.
+        wait_for_ready: poll the server until it responds before returning.
+        ready_timeout: seconds to wait for readiness.
+
+    Returns: dict with PID, server URL, and readiness status. The process
+    keeps running until you call stop_terrain_diffusion_server() or kill
+    it manually."""
+    if not os.path.isdir(repo_dir):
+        raise FileNotFoundError(
+            f"terrain-diffusion repo not found at {repo_dir!r}. "
+            f"Clone it first:\n"
+            f"  git clone https://github.com/xandergos/terrain-diffusion {repo_dir}\n"
+            f"  cd {repo_dir} && pip install -r requirements.txt"
+        )
+
+    cmd = [
+        sys.executable, "-m", "terrain_diffusion", "api", model,
+        "--port", str(port),
+    ]
+    if device:
+        cmd.extend(["--device", device])
+
+    proc = subprocess.Popen(
+        cmd,
+        cwd=repo_dir,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+
+    result = {
+        "pid": proc.pid,
+        "server_url": f"http://localhost:{port}",
+        "model": model,
+        "repo_dir": repo_dir,
+        "ready": False,
+    }
+
+    if not wait_for_ready:
+        result["note"] = (
+            "Server started in background. Poll /seed endpoint manually to "
+            "check readiness."
+        )
+        return result
+
+    # Poll the /seed endpoint until it responds (200 OK with JSON).
+    start = time.time()
+    url = f"http://localhost:{port}/seed"
+    while time.time() - start < ready_timeout:
+        if proc.poll() is not None:
+            # Process died before ready
+            out = ""
+            if proc.stdout:
+                try:
+                    out = proc.stdout.read()
+                except Exception:
+                    pass
+            raise RuntimeError(
+                f"terrain-diffusion server exited early "
+                f"(returncode={proc.returncode}). Output:\n{out[-2000:]}"
+            )
+        try:
+            with urllib.request.urlopen(url, timeout=2.0) as resp:
+                if resp.status == 200:
+                    result["ready"] = True
+                    result["elapsed_seconds"] = round(time.time() - start, 1)
+                    return result
+        except (urllib.error.URLError, ConnectionResetError, TimeoutError):
+            pass
+        time.sleep(2.0)
+
+    result["note"] = (
+        f"Server didn't respond within {ready_timeout}s — may still be "
+        f"loading model weights (first run takes 1-3 min). Check the "
+        f"process output, or retry with wait_for_ready=False and poll "
+        f"manually."
+    )
+    return result
