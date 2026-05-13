@@ -112,13 +112,23 @@ def make_playable_zombie_foundation(
     #
     # Window invariant: width=64, height=64, bottom=48 (= z=64 = waist height).
     # Doorway invariant: width=80, height=96 to match p7_zm_der_door_buy_std_onepiece model.
+    # Window height: 48 (NOT 64). The zbarrier_zmcore_basicwoodbarrier
+    # prefab's visible plank stack spans ~64 units vertically starting at
+    # local z=31 (verified by reading barricade_reciever_wood.map). With
+    # the prefab placed at world z=16, the planks end at roughly world
+    # z=110. A window with height=64 reaches z=128 (above the plank top —
+    # visible empty gap at the window top, "floating plank" appearance).
+    # Height=48 puts the window top at z=112, which sits flush with the
+    # top of the visible boards. Width stays 64 (matches plank horizontal
+    # extent). Bottom stays 48 (waist height; zombie vault animation
+    # expects this).
     geometry.carve_room_with_openings(
         map_name,
         mins=(-512, -256, 0), maxs=(-128, 256, 256),
         openings=[
             {"side": "east",  "width": 80, "height": 96},
-            {"side": "south", "width": 64, "height": 64, "bottom": 48},
-            {"side": "north", "width": 64, "height": 64, "bottom": 48},
+            {"side": "south", "width": 64, "height": 48, "bottom": 48},
+            {"side": "north", "width": 64, "height": 48, "bottom": 48},
         ],
         wall_thickness=16,
     )

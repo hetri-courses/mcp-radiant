@@ -1420,6 +1420,8 @@ def furnish_zone(
     perk_margin: float = 80.0,
     wall_buys: list[dict] | None = None,
     spawner_origins: list[tuple[float, float, float]] | None = None,
+    spawner_location_type: str = "riser_location",
+    spawner_script_string: str | None = None,
     light_origins: list[tuple[float, float, float]] | None = None,
     light_color: tuple[float, float, float] = (1.0, 0.95, 0.85),
     light_radius: float = 320.0,
@@ -1467,7 +1469,11 @@ def furnish_zone(
 
     if spawner_origins:
         for o in spawner_origins:
-            add_zombie_spawner(map_name, origin=tuple(o), zone_name=zone_name)
+            add_zombie_spawner(
+                map_name, origin=tuple(o), zone_name=zone_name,
+                location_type=spawner_location_type,
+                script_string=spawner_script_string,
+            )
         summary["placed"]["spawners"] = len(spawner_origins)
 
     if light_origins:
