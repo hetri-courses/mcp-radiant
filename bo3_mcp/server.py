@@ -1192,27 +1192,57 @@ def generate_terrain_diffusion(
 def start_terrain_diffusion_server(
     model: str = "xandergos/terrain-diffusion-30m",
     port: int = 8000,
-    device: str | None = None,
+    device: str | None = "privateuseone:0",
     repo_dir: str = "D:/projects/terrain-diffusion",
+    decoder_tile_size: int = 128,
+    decoder_tile_stride: int = 96,
+    batch_size: int = 1,
+    no_compile: bool = True,
+    dtype: str = "fp32",
+    drop_water_pct: float = 0.0,
+    seed: int | None = None,
     wait_for_ready: bool = True,
     ready_timeout: float = 300.0,
 ) -> dict:
     """Spawn the terrain-diffusion REST API as a background process. First
     run downloads model weights (~1-2 GB) — can take 1-3 minutes; this
-    function polls until the server is ready by default.
+    function polls /health until the server is ready by default.
+
+    Runs in a dedicated venv at `<repo_dir>/.venv` (Python 3.10 + torch
+    2.4.1 + torch-directml + inference deps). See CLAUDE.md
+    "Terrain-diffusion runtime" for one-time setup.
 
     Args:
         model: HF model id. Options: `xandergos/terrain-diffusion-30m`
             (default, finer for games), `xandergos/terrain-diffusion-90m`
             (broader, more realistic worldbuilding).
         port: Flask bind port (default 8000).
-        device: "cuda" / "cpu" / None (auto-detect). CPU works but is
-            many times slower.
+        device: torch device string. Default `"privateuseone:0"`
+            (DirectML, works on AMD/Intel/NVIDIA GPUs on Windows). Use
+            `"cuda"` for NVIDIA + CUDA, `"cpu"` to force CPU, `None` to
+            let terrain-diffusion auto-detect (will pick CPU on AMD
+            since torch.cuda.is_available()=False there).
         repo_dir: path to cloned terrain-diffusion repo.
-        wait_for_ready: poll until the server responds (default True).
+        decoder_tile_size: decoder spatial tile (default 128 fits 8 GB
+            VRAM; upstream default 512 OOMs there).
+        decoder_tile_stride: MUST be <= decoder_tile_size — stride
+            larger than size produces all-NaN model output silently.
+            Default 96.
+        batch_size: latent-stage batch size (default 1 = lowest VRAM).
+        no_compile: pass --no-compile (default True; torch.compile is
+            a no-op on Windows anyway).
+        dtype: model dtype, "fp32" / "bf16" / "fp16" (default "fp32").
+        drop_water_pct: 0.0 = unbiased, higher = more land bias.
+        seed: world seed (None = random). To change seed of a running
+            server, restart with new value (no live /seed endpoint).
+        wait_for_ready: poll /health until 200 (default True).
         ready_timeout: max seconds to wait for readiness."""
     return terrain.start_terrain_diffusion_server(
         model=model, port=port, device=device, repo_dir=repo_dir,
+        decoder_tile_size=decoder_tile_size,
+        decoder_tile_stride=decoder_tile_stride,
+        batch_size=batch_size, no_compile=no_compile, dtype=dtype,
+        drop_water_pct=drop_water_pct, seed=seed,
         wait_for_ready=wait_for_ready, ready_timeout=ready_timeout,
     )
 

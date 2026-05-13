@@ -430,6 +430,51 @@ def fetch_terrain_diffusion_region(
         heightmap.append([float(v) for v in row])
 
     climate_bytes = data[elev_bytes:]
+
+    # Quality guards: the API returns int16 elevation. If the model
+    # produces NaN floats they silently cast to 0, so "all elevation is
+    # 0" can mean either real flat ocean or NaN-from-broken-pipeline.
+    # We refuse to silently emit thousands of bogus brushes.
+    min_e = min(min(r) for r in heightmap)
+    max_e = max(max(r) for r in heightmap)
+    distinct = len({v for row in heightmap for v in row})
+    # Inspect climate for NaN (float32 has bit pattern 0x7fc00000 LE).
+    # Sample first ch of first 64 pixels — cheap finite-check.
+    climate_nan_in_temp_ch0 = False
+    if len(climate_bytes) >= 16:
+        # Climate layout: (H, W, 4) interleaved float32. First channel
+        # is temp. Walk through pixel-0 ch-0, pixel-1 ch-0, ... up to
+        # min(64, W*H) samples.
+        n_check = min(64, width * height)
+        for pix in range(n_check):
+            offset = pix * 16  # 4 channels x 4 bytes = 16 bytes per pixel
+            (v,) = struct.unpack_from("<f", climate_bytes, offset)
+            if v != v:  # NaN
+                climate_nan_in_temp_ch0 = True
+                break
+
+    if climate_nan_in_temp_ch0:
+        raise ValueError(
+            "terrain-diffusion returned NaN in the climate channel. "
+            "This usually means the model pipeline misbehaved — most "
+            "common cause is a mismatched decoder_tile_size / "
+            "decoder_tile_stride pair (stride must be <= tile_size). "
+            "Restart the server with paired kwargs."
+        )
+    if distinct == 1 and min_e == 0 and max_e == 0:
+        # All-zero elevation with no climate NaN: technically possible
+        # if the world is genuinely flat ocean here, but more likely a
+        # silent NaN-to-int16 cast. Refuse so we don't write thousands
+        # of bogus zero-height brushes; user can pass
+        # `allow_constant=True` to override in the high-level helper.
+        raise ValueError(
+            "terrain-diffusion returned all-zero elevation. This is "
+            "either deep-flat ocean (rare) or NaN silently cast to "
+            "int16 (common when the model pipeline is misconfigured). "
+            "Try a different region or restart the server with "
+            "paired decoder_tile_size/decoder_tile_stride."
+        )
+
     return heightmap, {
         "width": width,
         "height": height,
@@ -437,8 +482,9 @@ def fetch_terrain_diffusion_region(
         "climate_byte_count": len(climate_bytes),
         "n_climate_channels": 4,  # temp, t_season, precip, p_cv
         "climate_raw": climate_bytes,
-        "min_elev_m": min(min(r) for r in heightmap),
-        "max_elev_m": max(max(r) for r in heightmap),
+        "min_elev_m": min_e,
+        "max_elev_m": max_e,
+        "distinct_elev_values": distinct,
     }
 
 
@@ -536,6 +582,14 @@ def start_terrain_diffusion_server(
     device: str | None = "privateuseone:0",
     repo_dir: str = "D:/projects/terrain-diffusion",
     venv_dir: str | None = None,
+    decoder_tile_size: int = 128,
+    decoder_tile_stride: int = 96,
+    batch_size: int = 1,
+    no_compile: bool = True,
+    dtype: str = "fp32",
+    drop_water_pct: float = 0.0,
+    seed: int | None = None,
+    extra_kwargs: dict | None = None,
     wait_for_ready: bool = True,
     ready_timeout: float = 300.0,
 ) -> dict:
@@ -550,6 +604,13 @@ def start_terrain_diffusion_server(
     `torch-directml` hard-pins `torch==2.4.1`, which has no Python 3.14
     wheels, and the MCP itself targets newer Python. The MCP only talks
     to the server over HTTP — no Python-version coupling.
+
+    **VRAM tuning**: the upstream `decoder_tile_size=512` default OOMs on
+    8 GB cards. We default to `decoder_tile_size=128` with a paired
+    `decoder_tile_stride=96`. **Critical**: stride must be <= tile_size,
+    otherwise the model produces all-NaN output silently (because tiles
+    don't overlap and the seam-blending math diverges). If you change
+    one, change the other.
 
     Args:
         model: HF model identifier. Choices the repo ships:
@@ -569,12 +630,46 @@ def start_terrain_diffusion_server(
             deps installed. Defaults to `<repo_dir>/.venv`. See
             CLAUDE.md "Terrain-diffusion runtime" for the install
             recipe.
+        decoder_tile_size: spatial tile size for the decoder stage.
+            Default 128 (fits 8 GB VRAM). Raise to 256-512 if you have
+            more headroom (16+ GB) for faster, less-seamed output.
+            **Must pair with a smaller `decoder_tile_stride`**.
+        decoder_tile_stride: how far each decoder tile advances. Must
+            be <= decoder_tile_size to ensure overlap. Default 96
+            (75% of tile_size=128). Larger stride = faster but more
+            visible seams. Smaller = slower, smoother.
+        batch_size: latent-stage batch size. Default 1 (lowest VRAM).
+            Upstream default is "1,4" which can OOM on 8 GB cards.
+        no_compile: pass `--no-compile`. torch.compile is a no-op on
+            Windows anyway (per upstream warning) and not setting this
+            can cause subtle init issues. Default True.
+        dtype: model dtype. Default "fp32" (most stable). "bf16"/"fp16"
+            cut VRAM in half but DirectML support on older AMD cards
+            (RX 5000 series) varies.
+        drop_water_pct: conditioning bias. 0.0 = unbiased, model picks
+            water/land per seed. 0.5 = upstream default (more land).
+            Raise toward 1.0 to bias toward land-only output. Defaults
+            to 0.0 here for predictability.
+        seed: world seed for reproducibility. None = random. Note: the
+            running server's seed cannot be changed via HTTP (there is
+            no POST /seed endpoint despite stale docs); to change seed,
+            restart with a different value here.
+        extra_kwargs: additional `--kwarg key=value` pairs to pass
+            through to the WorldPipeline constructor.
         wait_for_ready: poll the server until it responds before returning.
         ready_timeout: seconds to wait for readiness.
 
     Returns: dict with PID, server URL, and readiness status. The process
     keeps running until you call stop_terrain_diffusion_server() or kill
     it manually."""
+    # Validate the paired tile/stride invariant
+    if decoder_tile_stride > decoder_tile_size:
+        raise ValueError(
+            f"decoder_tile_stride ({decoder_tile_stride}) must be <= "
+            f"decoder_tile_size ({decoder_tile_size}). Stride > size "
+            "produces all-NaN model output silently (no tile overlap, "
+            "seam-blending math diverges)."
+        )
     if not os.path.isdir(repo_dir):
         raise FileNotFoundError(
             f"terrain-diffusion repo not found at {repo_dir!r}. "
@@ -617,9 +712,27 @@ def start_terrain_diffusion_server(
     cmd = [
         venv_python, launcher, model,
         "--port", str(port),
+        "--batch-size", str(batch_size),
+        "--dtype", dtype,
     ]
     if device:
         cmd.extend(["--device", device])
+    if no_compile:
+        cmd.append("--no-compile")
+    if seed is not None:
+        cmd.extend(["--seed", str(seed)])
+    # WorldPipeline kwargs go through `--kwarg key=value` (parsed by
+    # parse_kwargs in api.py). The tile_size/stride pair is the critical
+    # one — see the docstring's "VRAM tuning" note.
+    pipeline_kwargs: dict = {
+        "decoder_tile_size": decoder_tile_size,
+        "decoder_tile_stride": decoder_tile_stride,
+        "drop_water_pct": drop_water_pct,
+    }
+    if extra_kwargs:
+        pipeline_kwargs.update(extra_kwargs)
+    for k, v in pipeline_kwargs.items():
+        cmd.extend(["--kwarg", f"{k}={v}"])
 
     # Belt-and-suspenders: also set TERRAIN_DEVICE env so even paths that
     # don't honor --device pick up the device choice (api.py:_select_device
@@ -663,9 +776,11 @@ def start_terrain_diffusion_server(
         )
         return result
 
-    # Poll the /seed endpoint until it responds (200 OK with JSON).
+    # Poll /health until it responds (200 OK). The live API exposes only
+    # /health and /terrain — the older API_README mentions /seed but that
+    # endpoint was removed.
     start = time.time()
-    url = f"http://localhost:{port}/seed"
+    url = f"http://localhost:{port}/health"
     while time.time() - start < ready_timeout:
         if proc.poll() is not None:
             # Process died before ready
