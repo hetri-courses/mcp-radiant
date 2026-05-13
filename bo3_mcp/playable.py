@@ -214,9 +214,17 @@ def make_playable_zombie_foundation(
     zm.add_zombie_window(map_name, origin=(-320, 240, 16), yaw=0,   zone_name="start_zone")
     summary["steps"].append({"start_zone_furnished": True, "windows": 2})
 
-    # ── 8. arena_zone — interior spawn_locations (verified working for
-    # SECONDARY zones; do NOT use this pattern in the starting zone). Spawners
-    # at z=16 — at floor surface, NEVER higher.
+    # ── 8. arena_zone — interior spawn_locations.
+    # WARNING (verified May 13 2026 playtest): the interior spawn_location
+    # pattern in arena/vault zones is PARTIALLY WORKING / buggy — zombies
+    # spawn but AI tracking glitches (they "blink in" rather than rise,
+    # tracking is unreliable). This pattern exists in zm_demo_v3 itself
+    # which has the same bug — so this is a BO3 framework limitation, not
+    # an MCP regression. We keep it because demo-equivalent behavior is
+    # what's documented; future versions should consider replacing interior
+    # spawners in arena/vault with the verified barricade+riser+courtyard
+    # pattern around the zone perimeter. Spawners stay at z=16 (floor
+    # surface) — that part is correct.
     arena_wall_buys = [
         {"weapon": "smg_standard", "origin": (320, -496, 8), "angles": (0, 0, 0)},
         {"weapon": "ar_standard",  "origin": (320, 496, 8),  "angles": (0, 180, 0)},
@@ -282,6 +290,12 @@ def make_playable_zombie_foundation(
         "layout": layout,
         "zones": ["start_zone", "arena_zone", "vault_zone"],
         "starting_zone": "start_zone",
+        # Zombie engagement status, per zone, as of May 13 2026 playtest:
+        "zone_engagement_status": {
+            "start_zone": "VERIFIED — barricade+riser+courtyard pattern, zombies rise/vault/path correctly",
+            "arena_zone": "BUGGY — interior spawn_location pattern; zombies blink in, tracking glitchy (same in zm_demo_v3 — BO3 framework quirk)",
+            "vault_zone": "BUGGY — same interior spawn_location pattern as arena",
+        },
         "zone_graph_edges": [
             ("start_zone", "arena_zone", "enter_arena", 500),
             ("arena_zone", "vault_zone", "enter_vault", 1500),
