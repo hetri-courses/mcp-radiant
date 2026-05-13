@@ -27,13 +27,22 @@ _LINKER_SUMMARY_RE = re.compile(
 def _run(args: list[str], *, timeout: int = 600) -> dict:
     """Run a subprocess, capture output, return a structured result.
     Default timeout is 10 minutes — enough for a from-scratch link of a
-    large map (zm_giant first-time was ~9 min)."""
+    large map (zm_giant first-time was ~9 min).
+
+    cwd is set to the BO3 bin/ folder so cod2map64's FS_Startup resolves
+    its relative search paths (devdiscdata, devraw, raw, etc.) correctly.
+    Without this, navmesh generation fails with "Unable to load navigation
+    mesh generation settings" because the config file lives at
+    `bin/<something>` relative paths that don't resolve from arbitrary
+    cwds. Confirmed by comparing FS_Startup paths between our invocation
+    and the launcher's (the launcher launches from bin/ implicitly)."""
     try:
         proc = subprocess.run(
             args,
             capture_output=True,
             text=True,
             env=paths.build_env(),
+            cwd=str(paths.bin_dir()),
             timeout=timeout,
         )
     except subprocess.TimeoutExpired as exc:
@@ -66,13 +75,24 @@ def compile_map(map_name: str, *, only_ents: bool = True) -> dict:
 
     `only_ents=True` (default) is the iteration path — entity-only changes
     compile in seconds. Set False when geometry, lighting, or per-map prefab
-    changes need to take effect."""
+    changes need to take effect.
+
+    For full compile (only_ents=False), passes `-navmesh -navvolume` flags
+    (matching the launcher's Compile checkbox) which generate the
+    `<map>_navmesh.hkt` and `<map>_navvolume.hkt` files. WITHOUT these,
+    zombies have no AI pathing data — they'll spawn but get stuck in
+    place because they can't compute walkable routes. Confirmed by
+    capturing the launcher's actual compile invocation (v20.1 fix)."""
     args = [
         str(paths.cod2map()),
         "-platform", "pc",
     ]
     if only_ents:
         args.append("-onlyents")
+    else:
+        # Full compile: include navmesh generation for AI pathing.
+        # Matches launcher's Compile-checkbox invocation.
+        args.extend(["-navmesh", "-navvolume"])
     args.extend([
         "-loadFrom", str(paths.map_source(map_name)),
         str(paths.bsp_output(map_name)),
@@ -92,36 +112,34 @@ def bake_lighting(
     """Stage 1.5 (between compile and link): bake lighting via radiant_modtools.
 
     This is what the Mod Tools Launcher's "Light" checkbox runs. Produces
-    the final lightmaps + reflection probes + LED probes that go into the
-    .ff via the linker. Without this, the map still loads but uses only
-    cod2map64's basic light grid (no bounces, no high-quality shadows).
+    LED-baked lighting + local probes that go into the .ff via the linker.
+    Without this, the map loads but uses only cod2map64's basic light grid
+    (no light bounces, no high-quality shadows).
 
-    `quality`: "draft" / "medium" / "final" — higher means slower + better.
-    Launcher default is "medium" (~30s-2min for small maps, ~10min for
-    factory-size maps).
+    `quality`: "draft" / "medium" (default) / "final". Takes 30s-2min for
+    small maps.
 
-    KNOWN BROKEN as of v20: every CLI flag combo we've tried (`-light`,
-    `-platform offscreen/windows`, `-fastlight`, `-convertall`, `-bspc`)
-    exits cleanly with returncode 0 but does NOT actually update the BSP.
-    The Mod Tools Launcher must use a non-CLI entry point (some Qt-side
-    callback) we haven't reverse-engineered yet. For now, use the
-    launcher's Light checkbox instead — untick Compile and Link there
-    (the MCP already did those) so only the lighting step runs.
+    Canonical invocation (captured from launcher Output Window v20.1):
 
-    EXPERIMENTAL: exact CLI form for radiant_modtools' headless light bake
-    is partially guessed. If this errors, try invoking it from the launcher
-    once first to capture the canonical command from the Output Window."""
+        radiant_modtools.exe -ledSilent +medium +localprobes +forceclean
+                             +recompute <map_source_path>
+
+    Key gotchas that I had wrong in earlier attempts:
+      - Quality flags use `+` prefix not `-` (Qt-style command flags)
+      - No `-platform` flag (Qt picks default)
+      - No `-light` or `-loadFrom` — the map path is positional
+      - `-ledSilent` enables LED export without GUI popups
+      - `+forceclean` + `+recompute` ensure a fresh bake (no cache hit)
+      - `+localprobes` bakes the reflection probes if any are placed"""
     args = [
         str(paths.radiant_modtools()),
-        "-nopopups",
-        "-platform", "pc",
-        "-light",
-        "-loadFrom", str(paths.map_source(map_name)),
+        "-ledSilent",
+        f"+{quality}",
+        "+localprobes",
+        "+forceclean",
+        "+recompute",
+        str(paths.map_source(map_name)),
     ]
-    # Some launcher configs add quality flags like `-q final` or `-final`.
-    # Treyarch's launcher uses `-q <quality>` per recent zm_giant builds.
-    if quality in ("draft", "medium", "final"):
-        args.extend(["-q", quality])
     result = _run(args, timeout=timeout)
     if not result["timed_out"]:
         result["summary"] = parse_warnings(result["output"])
