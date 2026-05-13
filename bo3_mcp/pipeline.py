@@ -83,6 +83,51 @@ def compile_map(map_name: str, *, only_ents: bool = True) -> dict:
     return result
 
 
+def bake_lighting(
+    map_name: str,
+    *,
+    quality: str = "medium",
+    timeout: int = 600,
+) -> dict:
+    """Stage 1.5 (between compile and link): bake lighting via radiant_modtools.
+
+    This is what the Mod Tools Launcher's "Light" checkbox runs. Produces
+    the final lightmaps + reflection probes + LED probes that go into the
+    .ff via the linker. Without this, the map still loads but uses only
+    cod2map64's basic light grid (no bounces, no high-quality shadows).
+
+    `quality`: "draft" / "medium" / "final" — higher means slower + better.
+    Launcher default is "medium" (~30s-2min for small maps, ~10min for
+    factory-size maps).
+
+    KNOWN BROKEN as of v20: every CLI flag combo we've tried (`-light`,
+    `-platform offscreen/windows`, `-fastlight`, `-convertall`, `-bspc`)
+    exits cleanly with returncode 0 but does NOT actually update the BSP.
+    The Mod Tools Launcher must use a non-CLI entry point (some Qt-side
+    callback) we haven't reverse-engineered yet. For now, use the
+    launcher's Light checkbox instead — untick Compile and Link there
+    (the MCP already did those) so only the lighting step runs.
+
+    EXPERIMENTAL: exact CLI form for radiant_modtools' headless light bake
+    is partially guessed. If this errors, try invoking it from the launcher
+    once first to capture the canonical command from the Output Window."""
+    args = [
+        str(paths.radiant_modtools()),
+        "-nopopups",
+        "-platform", "pc",
+        "-light",
+        "-loadFrom", str(paths.map_source(map_name)),
+    ]
+    # Some launcher configs add quality flags like `-q final` or `-final`.
+    # Treyarch's launcher uses `-q <quality>` per recent zm_giant builds.
+    if quality in ("draft", "medium", "final"):
+        args.extend(["-q", quality])
+    result = _run(args, timeout=timeout)
+    if not result["timed_out"]:
+        result["summary"] = parse_warnings(result["output"])
+    return result
+
+
 def link(map_name: str, *, language: str = "english") -> dict:
     """Stage 2: linker_modtools — packs the BSP + assets listed in the zone
     manifest into `<map>.ff` and `en_<map>.ff`."""

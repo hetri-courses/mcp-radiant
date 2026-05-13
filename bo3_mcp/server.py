@@ -1034,6 +1034,22 @@ def compile_map(map_name: str, only_ents: bool = True) -> dict:
 
 
 @mcp.tool()
+def bake_lighting(
+    map_name: str,
+    quality: str = "medium",
+    timeout: int = 600,
+) -> dict:
+    """Bake high-quality lightmaps via radiant_modtools — the "Light"
+    checkbox in the Mod Tools Launcher. Should run AFTER compile and
+    BEFORE link. Skipping this leaves the map with cod2map64's basic
+    light grid (functional but flat-looking, no light bounces).
+
+    `quality`: "draft" / "medium" (default) / "final". Takes 30s-2min for
+    small maps. EXPERIMENTAL — exact CLI form is partially guessed."""
+    return pipeline.bake_lighting(map_name, quality=quality, timeout=timeout)
+
+
+@mcp.tool()
 def link_map(map_name: str, language: str = "english") -> dict:
     """Run linker_modtools — packs the BSP + assets from the zone manifest into
     .ff fastfiles. First-time link can take minutes (asset conversion)."""
@@ -1042,8 +1058,69 @@ def link_map(map_name: str, language: str = "english") -> dict:
 
 @mcp.tool()
 def build(map_name: str, only_ents: bool = True) -> dict:
-    """Full chain: gdtdb update -> compile -> link. Stops on first failure."""
+    """Full chain: gdtdb update -> compile -> link. Stops on first failure.
+    Does NOT include lighting bake — use `build_full` for that."""
     return pipeline.build(map_name, only_ents=only_ents)
+
+
+@mcp.tool()
+def build_full(
+    map_name: str,
+    quality: str = "medium",
+    skip_gdtdb: bool = True,
+) -> dict:
+    """One-call replacement for the launcher's Build button: compile (full
+    geometry) → bake_lighting → link. Optionally runs gdtdb_update first
+    (skipped by default since it's slow and only needed when new assets
+    were added).
+
+    Replaces the workflow of: `compile_map` (MCP) → switch to launcher →
+    tick Compile/Light/Link/Run → click Build → wait → alt-tab back.
+
+    Total time: compile ~1s + light ~30s-2min + link ~5s (cached).
+
+    EXPERIMENTAL: relies on `bake_lighting` which has a partially-guessed
+    CLI invocation. If lighting fails, fall back to compile_map + link_map
+    and run the launcher's Light step manually."""
+    import time
+    started = time.time()
+    stages: list[dict] = []
+
+    if not skip_gdtdb:
+        s = pipeline.gdtdb_update()
+        stages.append({"stage": "gdtdb_update", **s})
+        if s.get("returncode", 0) != 0 or s.get("timed_out"):
+            return {"failed_at": "gdtdb_update", "stages": stages,
+                    "elapsed_seconds": round(time.time() - started, 2)}
+
+    s = pipeline.compile_map(map_name, only_ents=False)
+    stages.append({"stage": "compile", **s})
+    if s.get("returncode", 0) != 0 or s.get("timed_out"):
+        return {"failed_at": "compile", "stages": stages,
+                "elapsed_seconds": round(time.time() - started, 2)}
+
+    s = pipeline.bake_lighting(map_name, quality=quality)
+    stages.append({"stage": "bake_lighting", **s})
+    if s.get("returncode", 0) != 0 or s.get("timed_out"):
+        return {"failed_at": "bake_lighting", "stages": stages,
+                "elapsed_seconds": round(time.time() - started, 2),
+                "note": "Lighting bake failed — try running compile_map + "
+                        "link_map only, and use the launcher's Light step."}
+
+    s = pipeline.link(map_name)
+    stages.append({"stage": "link", **s})
+    if s.get("returncode", 0) != 0 or s.get("timed_out"):
+        return {"failed_at": "link", "stages": stages,
+                "elapsed_seconds": round(time.time() - started, 2)}
+
+    return {
+        "status": "complete",
+        "stages": stages,
+        "elapsed_seconds": round(time.time() - started, 2),
+        "map_name": map_name,
+        "fastfile": str(paths.root() / "usermaps" / map_name / "zone" /
+                        f"{map_name}.ff"),
+    }
 
 
 # --- Entry point -----------------------------------------------------------

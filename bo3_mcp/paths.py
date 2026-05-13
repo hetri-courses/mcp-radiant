@@ -75,6 +75,12 @@ def gdtdb() -> Path:
     return root() / "gdtdb" / "gdtdb.exe"
 
 
+def radiant_modtools() -> Path:
+    """Lighting bake + Radiant editor binary. Casing on the file system is
+    `Radiant_modtools.exe` (capital R) but Windows is case-insensitive."""
+    return bin_dir() / "radiant_modtools.exe"
+
+
 def build_env() -> dict[str, str]:
     """Env vars the build chain expects (set by modtools_setenv.bat)."""
     r = root()
