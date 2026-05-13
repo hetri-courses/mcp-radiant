@@ -19,6 +19,50 @@ There are no tests, linters, or formatters configured. The MCP itself has a sing
 
 `BO3_MOD_TOOLS` env var overrides the hardcoded install path (defaults to `D:\Steam\steamapps\common\Call of Duty Black Ops III 455130` — see [bo3_mcp/paths.py:9](bo3_mcp/paths.py:9)). Everything the server writes lives **outside** this repo, under `<MOD_TOOLS>/map_source/`, `<MOD_TOOLS>/share/raw/scripts/zm/`, and `<MOD_TOOLS>/usermaps/`.
 
+## Playable map invariants — DO NOT REGRESS
+
+These are the lessons paid for in actual playtest pain on `zm_demo_v3`. **Every new "playable" map MUST satisfy all of them**, or zombies won't engage / lighting will be wrong / map will appear broken in-game even when the compile pipeline says success. The high-level recipe `make_playable_zombie_foundation` ([playable.py](bo3_mcp/playable.py)) **encodes** these — call it instead of stitching low-level helpers together by hand.
+
+### Builder pass ≠ runtime pass
+
+`build(only_ents=False)` returning `returncode=0` and `leak=null` is the **builder smoke test**. It does NOT mean the map is playable. A map can compile clean and still: have black-void rendering, no lighting, stuck/falling zombies, no AI engagement. Don't claim "playable" without an in-game playtest checklist:
+
+- [ ] Map loads in BO3 → Custom Games
+- [ ] Lighting acceptable (NOT washed-out "preview lighting" — the linker log's `Failed to open .led` warning means you skipped the bake)
+- [ ] Player spawns on solid ground (not falling)
+- [ ] Terrain visible + textured + has collision (not skybox-texture "void bug")
+- [ ] Zombies spawn from intended location (ground/window — NOT mid-air)
+- [ ] Zombies actively path toward the player (NOT walking-in-place)
+- [ ] No console/runtime script errors
+
+### Lighting invariants
+
+- **Sky shell required** — `add_lighting_kit(playable_mins, playable_maxs)` wraps the playable area in a 6-slab sky-textured shell. Without it, cod2map64 won't run the `restricting BSP to sky brushes` pass and walls render as skybox texture from the inside (the "void bug").
+- **Umbra volume required** — same call adds this. Without it, cod2map64 defaults to a million-unit visibility cube and produces wrong/missing geometry.
+- **Sun volume required** — provides sun direction for the bake.
+- **Interior point lights required for sealed rooms** — `add_sun_volume`'s bake **cannot illuminate fully-enclosed boxes** (no opening for sun rays). Add `add_light` entities inside each room (warm white, radius 320-512, stops 4-5) or the room will be pitch-black post-bake.
+- **`bake_lighting` MUST run** before final link. The build sequence is **gdtdb → compile (only_ents=False) → bake_lighting → link**. Use `build_full(...)` to do all four in one call. If you skip the bake, the linker log shows `Failed to open ...led / Falling back to preview lighting` and the in-game result is washed-out + black-void.
+
+### Zombie spawning/pathing invariants
+
+- **Spawner Z = floor surface Z, never higher.** Floor brushes are conventionally z=[0..16] (16 thick), so spawners go at z=16 — NOT z=32 (8 above) or z=40 (24 above). The actor_spawner_zm_factory_zombie's "cube" sits in the world; if it's above the navmesh, zombies spawn floating and get stuck. The `add_zombie_spawner` tool exists; honor its `origin` Z carefully.
+- **Spawn struct must be zone-linked** with `targetname="<zone>_spawners"` — `add_zombie_spawner(zone_name=...)` sets this. Without the targetname, the BO3 framework can't find the spawn point even when spatial overlap is correct.
+- **Starting-zone canonical entry is barricades + risers, NOT interior spawn_locations.** Use `add_zombie_window` to create the barricade prefab in a wall PLUS the matching exterior riser script_struct ~96 units OUTSIDE the wall, in an outdoor courtyard (NOT inside the playable room). Risers inside the playable area glitch on the spawner cube without proper navmesh access.
+- **Barricade windows must be waist-height: `bottom=48`** for 64x64 windows. The vault animation expects this. `bottom=8` (floor-level) makes zombies vault into invisible ledges and fall through the world.
+- **Outdoor courtyards adjacent to barricade windows are mandatory** — `add_outdoor_courtyard(open_side=..., depth >= 144)`. Without them, the exterior riser sits in unbounded void, takes one step, falls forever. Also gives the player something to see through the boards.
+- **Interior spawn_locations work in SECONDARY zones** (arena, vault) that are activated by opening a door from the starting zone. They do NOT reliably work in the starting zone — confirmed in playtest (May 2026).
+- **Zone graph required for multi-zone**: `add_buyable_door(connects=("from_zone","to_zone"), script_flag=...)` auto-wires `zm_zonemgr::add_adjacent_zone(...)` in the GSC zone_init. Without the graph edge, secondary zones never activate.
+
+### Single-zone maps are UNVERIFIED
+
+Five attempts in May 2026 to build a "minimal" single-zone zombie arena (smoke_02 through smoke_05) all failed runtime playtest despite the compile pipeline reporting success. Demo v3's 3-zone layout (start + arena + vault, with buyable doors, lights per zone, mystery box, PaP, power switch) is the only **confirmed-working** BO3 zombie pattern from this MCP. Use it as the default. If you really want to experiment with fewer zones, do it AFTER you have a working 3-zone baseline you can fall back to.
+
+### When NOT to use `make_playable_zombie_foundation`
+
+- Pure geometry/test maps (no zombies needed) — use `scaffold_zombie_map` + manual helpers.
+- Iterating on a specific feature (e.g., a new perk prefab) — use an existing playable map and add to it.
+- Anywhere terrain-diffusion brushes need to go INSIDE the playable area — terrain-aware placement helpers are required to put spawners/player on terrain top (Phase 2; see "Terrain-aware placement" below when implemented).
+
 ## Terrain-diffusion runtime
 
 The `generate_terrain_diffusion` tool path (real ML-driven terrain, not the value-noise placeholder in `generate_terrain`) calls out to a separate Flask REST server backed by [xandergos/terrain-diffusion](https://github.com/xandergos/terrain-diffusion). That server lives in its **own venv** at `D:\projects\terrain-diffusion\.venv` (Python 3.10 + torch 2.4.1 + torch-directml + diffusers) — separate from the MCP's Python 3.14 because `torch-directml` hard-pins `torch==2.4.1` which has no 3.14 wheels.

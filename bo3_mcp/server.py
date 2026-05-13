@@ -7,7 +7,7 @@ import importlib
 
 from mcp.server.fastmcp import FastMCP
 
-from . import brushes, demo, entities, geometry, mapfile, paths, pipeline, scaffold, terrain, textures, zm
+from . import brushes, demo, entities, geometry, mapfile, paths, pipeline, playable, scaffold, terrain, textures, zm
 
 mcp = FastMCP("bo3-mcp")
 
@@ -49,6 +49,7 @@ def _reload_mcp_modules() -> dict:
         "bo3_mcp.zm",           # depends on brushes, entities, geometry, gsc, mapfile, paths
         "bo3_mcp.scaffold",     # depends on paths, mapfile
         "bo3_mcp.pipeline",     # depends on paths
+        "bo3_mcp.playable",     # depends on geometry, scaffold, zm
         "bo3_mcp.demo",         # depends on geometry, scaffold, zm
     ]
     import sys
@@ -170,6 +171,69 @@ def delete_entity(map_name: str, guid: str) -> dict:
 
 
 @mcp.tool()
+def make_playable_zombie_foundation(
+    map_name: str,
+    layout: str = "three_zone",
+    include_perks: bool = True,
+    include_wall_buys: bool = True,
+    include_mystery_box: bool = True,
+    include_pack_a_punch: bool = True,
+    include_power_switch: bool = True,
+    overwrite: bool = False,
+) -> dict:
+    """**CANONICAL recipe for "produce a playable BO3 zombie map from scratch".**
+
+    Use this INSTEAD OF stitching together scaffold + carve_room + add_zombie_spawner
+    + add_zombie_window + add_lighting_kit + ... by hand. Hand-stitched "minimal"
+    maps have repeatedly failed runtime playtest (zombies stuck, falling through
+    the world, washed-out lighting) because they drop one or more invariants the
+    BO3 zombie framework actually needs.
+
+    This recipe encodes the v3-verified invariants (see CLAUDE.md "Playable map
+    invariants — DO NOT REGRESS"):
+      * 3-zone layout (start + arena + vault) — single-zone playable maps are
+        UNVERIFIED as of May 2026 playtesting
+      * Barricade windows with `bottom=48` (waist-height; never `bottom=8`)
+      * Spawners at z=16 (floor surface; never floating above)
+      * Outdoor courtyards adjacent to barricade windows (risers stand on them)
+      * Lighting kit (sky shell + sun + umbra + fpstool) + interior point
+        lights per zone (sealed rooms are pitch-black without them)
+      * Zone graph wired via buyable doors → add_adjacent_zone in GSC
+
+    Args:
+        map_name: must start with `zm_`.
+        layout: currently only `"three_zone"` (verified). Other layouts will be
+            added after their own playtest verification.
+        include_perks: 4 perks at arena corners. Default True.
+        include_wall_buys: pistol in start, SMG+AR in arena. Default True.
+        include_mystery_box: in vault. Default True.
+        include_pack_a_punch: in vault. Default True.
+        include_power_switch: in vault. Default True.
+        overwrite: pass to scaffold (overwrite existing .map/.gsc files).
+
+    Returns:
+        dict with `summary` (build steps) and `playable_contract` (declarative
+        record of every invariant applied — sky_shell_added, umbra_volume_added,
+        spawners_z_at_floor_surface, lighting_bake_required, etc.). Use the
+        contract to verify nothing was silently dropped.
+
+    Follow up with `build_full(map_name, quality="draft")` — the
+    `playable_contract.next_build_command` declares exactly what to run.
+    Compile-clean is NOT the same as runtime-playable; see
+    `playable_contract.runtime_checklist` for the in-game test plan."""
+    return playable.make_playable_zombie_foundation(
+        map_name,
+        layout=layout,  # type: ignore[arg-type]
+        include_perks=include_perks,
+        include_wall_buys=include_wall_buys,
+        include_mystery_box=include_mystery_box,
+        include_pack_a_punch=include_pack_a_punch,
+        include_power_switch=include_power_switch,
+        overwrite=overwrite,
+    )
+
+
+@mcp.tool()
 def make_demo_map(name: str, overwrite: bool = False) -> dict:
     """Build a complete 3-zone playable shell in one call. Composes scaffold +
     geometry + zone/door/spawn/perk/box/pap helpers — same recipe a user
@@ -182,8 +246,12 @@ def make_demo_map(name: str, overwrite: bool = False) -> dict:
 
     Two doors connect the zones (start→arena 500pts, arena→vault 1500pts),
     auto-wired via add_adjacent_zone in the GSC. Six zombie spawners
-    distributed across all three zones. Use this when you want to see a
-    working baseline before customizing your own layout."""
+    distributed across all three zones.
+
+    **Prefer `make_playable_zombie_foundation`** for new maps — it encodes the
+    same v3 invariants and returns a `playable_contract` declaring each one,
+    so you can verify nothing was silently dropped. Keep `make_demo_map` for
+    backwards compatibility / quick demos."""
     return demo.make_demo_map(name, overwrite=overwrite)
 
 
