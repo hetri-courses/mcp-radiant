@@ -357,18 +357,16 @@ def fetch_terrain_diffusion_region(
     i1: int, j1: int, i2: int, j2: int,
     *,
     scale: int = 1,
+    seed: int | None = None,
+    allow_constant: bool = False,
     server_url: str = DEFAULT_TD_SERVER,
     timeout: float = 180.0,
 ) -> tuple[list[list[float]], dict]:
     """Hit the xandergos/terrain-diffusion REST API and return a heightmap
-    region in METERS, plus parsed climate channels.
+    region in METERS, plus parsed climate channels and per-channel stats.
 
-    The server must be running locally — start it with:
-        python -m terrain_diffusion api xandergos/terrain-diffusion-30m
-
-    See https://github.com/xandergos/terrain-diffusion for install +
-    weight-download instructions. The server binds to localhost:8000 by
-    default.
+    The server must be running — see `start_terrain_diffusion_server` or
+    the CLAUDE.md "Terrain-diffusion runtime" section for install.
 
     Args:
         i1, j1, i2, j2: bounding box in target-resolution pixel coords.
@@ -376,21 +374,31 @@ def fetch_terrain_diffusion_region(
             Width = i2-i1, height = j2-j1. Each pixel covers `90/scale`
             meters on the 90m model, `30/scale` on the 30m model.
         scale: integer multiplier vs base resolution. 1=base, 2=2x, 4=4x.
+        seed: optional world seed. Upstream `/terrain` accepts a `seed`
+            query param that triggers `world.change_seed(seed)` server-
+            side, clearing the cache and rebuilding. None = use whatever
+            seed the running server has.
+        allow_constant: if True, don't raise on all-zero elevation
+            (otherwise such responses are treated as silent NaN-cast
+            failures and rejected). Set True only when you intentionally
+            want flat ocean output.
         server_url: base URL of the terrain-diffusion REST API server.
         timeout: HTTP timeout in seconds. Diffusion sampling on CPU can
             take minutes for large regions.
 
     Returns:
         (heightmap, meta) where:
-        - heightmap: 2D list of floats, dimensions (j2-j1, i2-i1). Values
-          are elevation in METERS (floored, signed). Negative values are
-          ocean/below-sea-level. Pass to `heightmap_to_brushes` with an
-          appropriate `height_scale` to convert to BO3 world units.
-        - meta: dict with `width`, `height`, `n_climate_channels`, raw
-          `climate` bytes (for advanced use).
+        - heightmap: 2D list of floats, dimensions (height, width). Values
+          are elevation in METERS (floored int16-cast back to float).
+          Negative values mean ocean/below-sea-level. Feed to
+          `heightmap_to_brushes` directly or via `generate_terrain_diffusion`.
+        - meta: dict with width/height, elev min/max/range/distinct, raw
+          climate bytes, per-channel climate stats, and payload sizes.
 
-    Raises ConnectionError if the server isn't reachable — typically means
-    you haven't started it, or it's still loading the model weights."""
+    Raises:
+        ConnectionError: server unreachable.
+        ValueError: bad payload size, non-finite climate, or all-zero
+            elevation (when allow_constant=False)."""
     width = i2 - i1
     height = j2 - j1
     if width <= 0 or height <= 0:
@@ -403,76 +411,88 @@ def fetch_terrain_diffusion_region(
 
     url = (f"{server_url.rstrip('/')}/terrain"
            f"?i1={i1}&j1={j1}&i2={i2}&j2={j2}&scale={scale}")
+    if seed is not None:
+        url += f"&seed={seed}"
     try:
         with urllib.request.urlopen(url, timeout=timeout) as resp:
             data = resp.read()
     except urllib.error.URLError as e:
         raise ConnectionError(
             f"Couldn't reach terrain-diffusion API at {server_url}: {e}. "
-            "Did you start the server? Try:\n"
-            "  python -m terrain_diffusion api xandergos/terrain-diffusion-30m\n"
-            "Then wait for model loading to finish before retrying."
+            "Start the server first via start_terrain_diffusion_server "
+            "(or check CLAUDE.md \"Terrain-diffusion runtime\")."
         ) from e
 
-    # Response layout:
-    #   elevation: int16 little-endian, height*width*2 bytes
-    #   climate:   float32 little-endian interleaved (h, w, 4 channels)
+    # Response layout: elevation int16-LE (H*W*2 bytes) + climate float32-LE
+    # interleaved (H, W, 4 channels = H*W*16 bytes). The climate block is
+    # always present in the current API.
     elev_bytes = height * width * 2
-    if len(data) < elev_bytes:
+    climate_bytes_expected = height * width * 4 * 4
+    expected_total = elev_bytes + climate_bytes_expected
+    if len(data) == elev_bytes:
+        # No climate (theoretical fallback). Treat as missing.
+        climate_bytes = b""
+    elif len(data) == expected_total:
+        climate_bytes = data[elev_bytes:]
+    else:
         raise ValueError(
-            f"server returned {len(data)} bytes but elevation alone needs "
-            f"{elev_bytes}. Did the request fail silently?"
+            f"unexpected payload length {len(data)}; expected "
+            f"{elev_bytes} (elev only) or {expected_total} (elev + climate). "
+            "Did the request fail silently or the API change?"
         )
+
     heightmap: list[list[float]] = []
     for y in range(height):
         row_offset = y * width * 2
         row = list(struct.unpack_from(f"<{width}h", data, row_offset))
         heightmap.append([float(v) for v in row])
 
-    climate_bytes = data[elev_bytes:]
-
-    # Quality guards: the API returns int16 elevation. If the model
-    # produces NaN floats they silently cast to 0, so "all elevation is
-    # 0" can mean either real flat ocean or NaN-from-broken-pipeline.
-    # We refuse to silently emit thousands of bogus brushes.
     min_e = min(min(r) for r in heightmap)
     max_e = max(max(r) for r in heightmap)
     distinct = len({v for row in heightmap for v in row})
-    # Inspect climate for NaN (float32 has bit pattern 0x7fc00000 LE).
-    # Sample first ch of first 64 pixels — cheap finite-check.
-    climate_nan_in_temp_ch0 = False
-    if len(climate_bytes) >= 16:
-        # Climate layout: (H, W, 4) interleaved float32. First channel
-        # is temp. Walk through pixel-0 ch-0, pixel-1 ch-0, ... up to
-        # min(64, W*H) samples.
-        n_check = min(64, width * height)
-        for pix in range(n_check):
-            offset = pix * 16  # 4 channels x 4 bytes = 16 bytes per pixel
-            (v,) = struct.unpack_from("<f", climate_bytes, offset)
-            if v != v:  # NaN
-                climate_nan_in_temp_ch0 = True
-                break
 
-    if climate_nan_in_temp_ch0:
+    # Climate finite check (full scan, not sampled). Compute per-channel
+    # stats for the preview tool. Climate layout: (H, W, 4) interleaved
+    # so the c-th channel lives at indices [c::4] of the flat float array.
+    climate_channel_stats: list[dict] = []
+    if climate_bytes:
+        n_floats = width * height * 4
+        if len(climate_bytes) != n_floats * 4:
+            raise ValueError(
+                f"climate block size {len(climate_bytes)} != expected "
+                f"{n_floats * 4} ({width}x{height}x4xf32)"
+            )
+        flat = struct.unpack(f"<{n_floats}f", climate_bytes)
+        # Detect NaN OR Inf
+        nonfinite = sum(1 for v in flat if v != v or v == math.inf or v == -math.inf)
+        if nonfinite:
+            raise ValueError(
+                f"terrain-diffusion climate has {nonfinite}/{n_floats} "
+                "non-finite values (NaN/Inf). Most common cause: mismatched "
+                "decoder_tile_size / decoder_tile_stride pair (stride must "
+                "be <= tile_size). Restart server with paired kwargs."
+            )
+        for c, name in enumerate(("temp_C", "t_season", "precip_mm", "p_cv")):
+            ch = flat[c::4]
+            climate_channel_stats.append({
+                "channel": c,
+                "name": name,
+                "min": min(ch),
+                "max": max(ch),
+                "mean": sum(ch) / len(ch),
+            })
+
+    if not allow_constant and distinct == 1 and min_e == 0 and max_e == 0:
+        # All-zero elevation: previously the silent NaN signature. Now
+        # that we full-scan climate above, this is more likely real flat
+        # ocean — but emitting 0 brushes is still useless, so refuse by
+        # default. Caller passes allow_constant=True to override.
         raise ValueError(
-            "terrain-diffusion returned NaN in the climate channel. "
-            "This usually means the model pipeline misbehaved — most "
-            "common cause is a mismatched decoder_tile_size / "
-            "decoder_tile_stride pair (stride must be <= tile_size). "
-            "Restart the server with paired kwargs."
-        )
-    if distinct == 1 and min_e == 0 and max_e == 0:
-        # All-zero elevation with no climate NaN: technically possible
-        # if the world is genuinely flat ocean here, but more likely a
-        # silent NaN-to-int16 cast. Refuse so we don't write thousands
-        # of bogus zero-height brushes; user can pass
-        # `allow_constant=True` to override in the high-level helper.
-        raise ValueError(
-            "terrain-diffusion returned all-zero elevation. This is "
-            "either deep-flat ocean (rare) or NaN silently cast to "
-            "int16 (common when the model pipeline is misconfigured). "
-            "Try a different region or restart the server with "
-            "paired decoder_tile_size/decoder_tile_stride."
+            "terrain-diffusion returned all-zero elevation (1024 cells, "
+            "min=max=0). With finite climate this is either rare-but-real "
+            "flat sea floor or model misbehavior. Refusing to emit zero "
+            "brushes. Pass allow_constant=True to override, or pick a "
+            "different region/seed."
         )
 
     return heightmap, {
@@ -482,9 +502,132 @@ def fetch_terrain_diffusion_region(
         "climate_byte_count": len(climate_bytes),
         "n_climate_channels": 4,  # temp, t_season, precip, p_cv
         "climate_raw": climate_bytes,
+        "climate_channel_stats": climate_channel_stats,
         "min_elev_m": min_e,
         "max_elev_m": max_e,
+        "elev_range_m": max_e - min_e,
         "distinct_elev_values": distinct,
+        "seed_used": seed,
+    }
+
+
+def preview_terrain_diffusion_region(
+    *,
+    region: tuple[int, int, int, int] = (0, 0, 32, 32),
+    scale: int = 1,
+    seed: int | None = None,
+    sea_level_m: float = 0.0,
+    world_units_per_meter: float = 0.3,
+    cell_size: float = 64.0,
+    server_url: str = DEFAULT_TD_SERVER,
+) -> dict:
+    """Non-mutating probe of a terrain-diffusion region.
+
+    Fetches the same data `generate_terrain_diffusion` would, but
+    instead of emitting brushes returns a summary you can use to pick
+    `seed`, `sea_level_m`, `world_units_per_meter`, and `cell_size`
+    before committing. Cheap (one HTTP request, no map I/O).
+
+    Use this iteratively when scouting for terrain: probe a few seeds,
+    look at `elev_range_m` and `recommended_*` fields, then call
+    `generate_terrain_diffusion` with the chosen seed/normalize flag.
+
+    Args:
+        region, scale, seed, server_url: same as
+            `fetch_terrain_diffusion_region`.
+        sea_level_m, world_units_per_meter, cell_size: candidate
+            scaling params; the preview computes how many brushes
+            you'd get with them, plus recommendations.
+
+    Returns: dict with elevation stats, climate stats, brush-count
+        estimates under different scaling strategies, and
+        recommendations for sea_level_m / normalize_elevation."""
+    i1, j1, i2, j2 = region
+    heightmap, meta = fetch_terrain_diffusion_region(
+        i1, j1, i2, j2,
+        scale=scale, seed=seed, server_url=server_url,
+        # Don't refuse all-zero in preview mode — caller wants to see it.
+        allow_constant=True,
+    )
+
+    all_vals = [v for row in heightmap for v in row]
+    width = meta["width"]
+    height = meta["height"]
+    total_cells = width * height
+    local_min = meta["min_elev_m"]
+    local_max = meta["max_elev_m"]
+    elev_range = meta["elev_range_m"]
+
+    # Brush-count estimate under current sea_level_m (clamps below to 0,
+    # which `heightmap_to_brushes` then skips via `skip_below=0.0`).
+    above_sea = sum(1 for v in all_vals if (v - sea_level_m) * world_units_per_meter > 0)
+    # Brush-count estimate with normalize_elevation=True (offset by local_min).
+    # After offset, only the literal minimum cell is at 0; everything else
+    # is above. Floor for "emit" is > 0, so the minimum cell skips.
+    normalized = sum(1 for v in all_vals if (v - local_min) * world_units_per_meter > 0)
+
+    # Recommendation: if 0 brushes would land under current settings,
+    # recommend normalization or a sea_level just below the minimum.
+    if above_sea == 0:
+        recommended_sea_level_m = float(local_min) - 1.0
+        recommendation_note = (
+            f"Under current sea_level_m={sea_level_m}, the whole region "
+            f"is submerged ({local_min:.0f}..{local_max:.0f} m) and would "
+            f"emit 0 brushes. Either pass normalize_elevation=True (treats "
+            f"bathymetry as relief), or set "
+            f"sea_level_m={recommended_sea_level_m:.0f} to put 'ground' "
+            f"just below the lowest cell."
+        )
+    elif above_sea < total_cells * 0.05:
+        recommended_sea_level_m = sea_level_m
+        recommendation_note = (
+            f"Only {above_sea}/{total_cells} cells ({100*above_sea/total_cells:.0f}%) "
+            "are above current sea_level_m — most of the region would be "
+            "empty. Consider normalize_elevation=True for full coverage."
+        )
+    else:
+        recommended_sea_level_m = sea_level_m
+        recommendation_note = "ok — current settings produce usable coverage"
+
+    # Recommended world_units_per_meter targets a max BO3 z-height of ~256
+    # (one room's worth) for the highest cell. Useful when you don't yet
+    # know how tall the local relief is.
+    if elev_range > 0:
+        rec_wupm_room = 256 / elev_range  # one room (=256 units) of relief
+        rec_wupm_arena = 512 / elev_range  # 2-room mountain
+    else:
+        rec_wupm_room = world_units_per_meter
+        rec_wupm_arena = world_units_per_meter
+
+    return {
+        "region": region,
+        "scale": scale,
+        "seed": seed,
+        "width": width,
+        "height": height,
+        "total_cells": total_cells,
+        "elev": {
+            "min_m": local_min,
+            "max_m": local_max,
+            "range_m": elev_range,
+            "distinct_values": meta["distinct_elev_values"],
+        },
+        "climate_channels": meta["climate_channel_stats"],
+        "scaling_estimates": {
+            "current_sea_level_m": sea_level_m,
+            "current_world_units_per_meter": world_units_per_meter,
+            "current_cell_size": cell_size,
+            "current_xy_footprint": (width * cell_size, height * cell_size),
+            "estimated_brushes_under_sea_level": above_sea,
+            "estimated_brushes_with_normalize": normalized,
+        },
+        "recommendations": {
+            "sea_level_m": recommended_sea_level_m,
+            "note": recommendation_note,
+            "world_units_per_meter_for_room_tall_relief": rec_wupm_room,
+            "world_units_per_meter_for_arena_tall_relief": rec_wupm_arena,
+            "normalize_elevation_suggested": above_sea < total_cells * 0.05,
+        },
     }
 
 
@@ -493,17 +636,26 @@ def generate_terrain_diffusion(
     *,
     region: tuple[int, int, int, int] = (0, 0, 128, 128),
     scale: int = 1,
+    seed: int | None = None,
     origin: tuple[float, float, float] = (0.0, 0.0, 0.0),
     cell_size: float = 64.0,
     sea_level_m: float = 0.0,
+    normalize_elevation: bool = False,
+    floor_thickness_units: float = 0.0,
     world_units_per_meter: float = 0.3,
     server_url: str = DEFAULT_TD_SERVER,
     height_bands: list[tuple[float, str]] | None = None,
     merge_strips: bool = True,
     max_brushes: int = 32768,
+    allow_constant: bool = False,
 ) -> dict:
     """Generate BO3 terrain using xandergos/terrain-diffusion as the heightmap
     source. Hits the REST API, converts meters → BO3 inches, places brushes.
+
+    **Strongly recommended**: call `preview_terrain_diffusion_region` first
+    to scout the region and pick reasonable values. Real-world elevation
+    is often negative (ocean/bathymetry) — without `normalize_elevation`
+    those become void and you get zero brushes.
 
     Args:
         region: (i1, j1, i2, j2) pixel-coordinate bbox in the model's
@@ -511,36 +663,81 @@ def generate_terrain_diffusion(
             Default 128×128 = 16384 cells, fast to sample but plenty
             detailed.
         scale: resolution multiplier (1 = base, 2 = 2x, 4 = 4x).
+        seed: optional world seed (changes terrain layout). Passed
+            through to the API; no server restart needed.
         origin: world position of the (i1, j1) corner in BO3 units.
-            Z is the base elevation that maps to sea_level_m.
+            Z is the base elevation that maps to effective sea level.
         cell_size: XY extent per heightmap pixel in BO3 units.
         sea_level_m: meters from the model's output that map to origin.z
             in world units. Elevations below this become void (no brush).
+            Ignored if `normalize_elevation=True`.
+        normalize_elevation: if True, use the region's local min elevation
+            as the effective sea level. This turns bathymetry (negative
+            elevation) into usable relief — the deepest cell becomes the
+            "floor" (z=0 + floor_thickness_units) and everything rises
+            from there. Recommended for ocean/below-sea-level regions.
+        floor_thickness_units: BO3 units of solid ground beneath the
+            local minimum (so even the lowest cell emits a brush, not
+            void). Default 0 means the lowest cell gets a 0-height brush
+            which is then skipped. Set to e.g. 16 to give every cell at
+            least a 16-unit-thick floor slab.
         world_units_per_meter: how many BO3 inches one meter of real-world
             elevation maps to. 0.3 = scaled-down realistic mountains
-            (a 100m hill becomes 30 BO3 units). 1.0 ≈ 1:1 but most BO3
-            elevations are tens of meters tall, so 0.3-0.5 reads well.
+            (a 100m hill becomes 30 BO3 units). For 100-meter ranges of
+            relief, 1.0-2.5 reads as proper terrain at room scale.
         server_url: terrain-diffusion API URL (default localhost:8000).
         height_bands: per-elevation textures `[(top_z, "tex"), ...]`.
             Defaults to a wasteland palette.
         merge_strips: collapse same-height X-runs (recommended True).
         max_brushes: safety budget.
+        allow_constant: pass through to fetch — only set True if you
+            specifically want flat-zero terrain.
 
     Returns: dict from heightmap_to_brushes plus terrain-diffusion meta
-    (min/max elevation, climate channel counts)."""
+    (min/max elevation, climate channel counts).
+
+    Raises ValueError if the scaled terrain would emit 0 brushes — the
+    message tells you whether to enable normalize_elevation or lower
+    sea_level_m."""
     i1, j1, i2, j2 = region
     heightmap_m, meta = fetch_terrain_diffusion_region(
-        i1, j1, i2, j2, scale=scale, server_url=server_url
+        i1, j1, i2, j2,
+        scale=scale, seed=seed, server_url=server_url,
+        allow_constant=allow_constant,
     )
 
-    # Convert meters → BO3 units, subtract sea level, clamp negatives → 0.
+    # Determine the effective baseline elevation (in meters) that maps to
+    # origin.z. With normalize_elevation, we slide the region's local
+    # minimum down to be the "ground" level, so even fully-submerged
+    # regions become usable relief.
+    if normalize_elevation:
+        effective_sea_level_m = meta["min_elev_m"]
+    else:
+        effective_sea_level_m = sea_level_m
+
+    # Convert m → BO3 units, subtract baseline, clamp negatives to 0
+    # (BUT add floor_thickness_units for the lowest cell so it still emits).
     scaled: list[list[float]] = []
     for row in heightmap_m:
         scaled_row = []
         for m in row:
-            world_z = (m - sea_level_m) * world_units_per_meter
+            world_z = (m - effective_sea_level_m) * world_units_per_meter + floor_thickness_units
             scaled_row.append(max(0.0, world_z))
         scaled.append(scaled_row)
+
+    # Post-scale guard: error early if we'd emit 0 brushes.
+    nonzero_cells = sum(1 for r in scaled for v in r if v > 0)
+    if nonzero_cells == 0:
+        rec = float(meta["min_elev_m"]) - 1.0
+        raise ValueError(
+            f"Generated terrain would emit 0 brushes. Region elevation "
+            f"range is {meta['min_elev_m']:.0f}..{meta['max_elev_m']:.0f} m, "
+            f"all <= effective sea level {effective_sea_level_m:.0f} m. "
+            f"Either pass normalize_elevation=True (use bathymetry as "
+            f"relief), set sea_level_m={rec:.0f} (just below local min), "
+            f"or pass floor_thickness_units=16 to floor every cell. "
+            f"Call preview_terrain_diffusion_region first to scout."
+        )
 
     if height_bands is None:
         # Auto-band based on observed elevation range
@@ -567,10 +764,15 @@ def generate_terrain_diffusion(
     result["model_meta"] = {
         "region_pixels": (i2 - i1, j2 - j1),
         "scale": scale,
+        "seed": seed,
         "min_elev_m": meta["min_elev_m"],
         "max_elev_m": meta["max_elev_m"],
+        "elev_range_m": meta["elev_range_m"],
+        "distinct_elev_values": meta["distinct_elev_values"],
+        "effective_sea_level_m": effective_sea_level_m,
+        "normalize_elevation": normalize_elevation,
+        "floor_thickness_units": floor_thickness_units,
         "world_units_per_meter": world_units_per_meter,
-        "sea_level_m": sea_level_m,
     }
     return result
 

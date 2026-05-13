@@ -1126,50 +1126,116 @@ def generate_terrain(
 
 
 @mcp.tool()
+def preview_terrain_diffusion_region(
+    region: list[int] | None = None,
+    scale: int = 1,
+    seed: int | None = None,
+    sea_level_m: float = 0.0,
+    world_units_per_meter: float = 0.3,
+    cell_size: float = 64.0,
+    server_url: str = "http://localhost:8000",
+) -> dict:
+    """Probe a terrain-diffusion region WITHOUT writing brushes.
+
+    Call this first when scouting terrain — it returns elev/climate stats
+    plus brush-count estimates and recommendations for sea_level_m /
+    world_units_per_meter / normalize_elevation, so you can pick params
+    before committing to actual brush emission.
+
+    Workflow:
+        1. preview_terrain_diffusion_region(region=[0,0,32,32], seed=42)
+        2. read `recommendations` — adjust `seed` / `sea_level_m` /
+           consider normalize_elevation=True
+        3. Re-preview until happy (cheap: ~6s/region on GPU)
+        4. generate_terrain_diffusion(...) with chosen params
+
+    Args:
+        region: [i1, j1, i2, j2] pixel bbox. Default [0, 0, 32, 32]
+            (small for fast scouting).
+        scale: resolution multiplier (1, 2, 4, 8).
+        seed: optional world seed (changes terrain layout).
+        sea_level_m, world_units_per_meter, cell_size: candidate
+            scaling params; preview reports how many brushes you'd
+            get under them.
+        server_url: terrain-diffusion API endpoint.
+
+    Returns: dict with elevation stats (`elev`), per-channel climate
+        stats (`climate_channels`), brush-count estimates
+        (`scaling_estimates`), and `recommendations` for tuning."""
+    return terrain.preview_terrain_diffusion_region(
+        region=tuple(region) if region else (0, 0, 32, 32),  # type: ignore[arg-type]
+        scale=scale,
+        seed=seed,
+        sea_level_m=sea_level_m,
+        world_units_per_meter=world_units_per_meter,
+        cell_size=cell_size,
+        server_url=server_url,
+    )
+
+
+@mcp.tool()
 def generate_terrain_diffusion(
     map_name: str,
     region: list[int] | None = None,
     scale: int = 1,
+    seed: int | None = None,
     origin: list[float] | None = None,
     cell_size: float = 64.0,
     sea_level_m: float = 0.0,
+    normalize_elevation: bool = False,
+    floor_thickness_units: float = 0.0,
     world_units_per_meter: float = 0.3,
     server_url: str = "http://localhost:8000",
     height_bands: list[list] | None = None,
     merge_strips: bool = True,
     max_brushes: int = 32768,
+    allow_constant: bool = False,
 ) -> dict:
-    """Generate terrain via xandergos/terrain-diffusion — a diffusion-model
-    backed terrain generator (Treyarch-quality vs. our value-noise baseline).
+    """Generate terrain via xandergos/terrain-diffusion — diffusion-model
+    backed terrain (the real ML path, NOT the value-noise placeholder in
+    `generate_terrain`).
 
-    Requires the terrain-diffusion API server running locally. Start it
-    with `start_terrain_diffusion_server`, or manually:
-        cd D:/projects/terrain-diffusion
-        python -m terrain_diffusion api xandergos/terrain-diffusion-30m
-
-    See https://github.com/xandergos/terrain-diffusion for install. First
-    run downloads ~1-2 GB of model weights from Hugging Face Hub.
+    Requires the terrain-diffusion API server running. Start it via
+    `start_terrain_diffusion_server`. **Strongly recommended**: call
+    `preview_terrain_diffusion_region` first to scout values for
+    `seed`, `sea_level_m`, and decide whether to use
+    `normalize_elevation`.
 
     Args:
         region: [i1, j1, i2, j2] pixel bbox in model output space.
-            Width = i2-i1, height = j2-j1 = grid dimensions.
             Default [0, 0, 128, 128] (128x128 = 16384 cells).
         scale: resolution multiplier (1, 2, 4, 8). 1 = 30m/pixel on the
-            30m model, 90m/pixel on 90m. Higher = finer detail.
+            30m model. Higher = finer detail.
+        seed: optional world seed. Passed through to API as `?seed=` — no
+            server restart needed. None = use server's current seed.
         origin: world (i1, j1) corner in BO3 units. Default (0,0,0).
         cell_size: XY extent per heightmap pixel in BO3 units. Default 64.
         sea_level_m: model elevation (meters) that maps to origin.z.
-            Anything below becomes void/skipped. Default 0.
-        world_units_per_meter: BO3 unit scale per meter of real elevation.
-            0.3 = scaled mountains (100m → 30 BO3 units, walkable).
-            1.0 = realistic but often too tall for indoor gameplay.
+            Anything below becomes void/skipped. Default 0. **Ignored if
+            normalize_elevation=True.**
+        normalize_elevation: use the region's local min as the effective
+            sea level. Turns bathymetry into relief — recommended for
+            below-sea-level regions (the default world has lots of
+            ocean). Default False.
+        floor_thickness_units: BO3 units of solid ground beneath the
+            lowest cell. 0 means lowest cell emits 0-height (skipped).
+            Set 16 to give every cell a 16-unit floor slab.
+        world_units_per_meter: BO3 inches per meter of real elevation.
+            For a region with 150m of relief, 0.3 = 45 units (low hills),
+            1.0 = 150 units (~1 room tall), 2.5 = 375 units (mountain).
         server_url: terrain-diffusion API endpoint.
         height_bands: per-elevation textures `[[top_z, "tex"], ...]`. If
-            None, auto-bands by observed elevation range (dirt/rock/crag).
+            None, auto-bands by observed elevation range.
         merge_strips: collapse same-height X-runs (default True).
         max_brushes: safety budget.
+        allow_constant: only set True if you specifically want
+            potentially-flat terrain (skips the all-zero guard).
 
-    Returns: brush counts + model metadata (min/max elevation observed)."""
+    Returns: brush counts + full model metadata.
+
+    Raises ValueError if the scaled terrain would emit 0 brushes — the
+    message tells you whether to enable normalize_elevation or lower
+    sea_level_m. Call preview_terrain_diffusion_region first."""
     bands: list[tuple[float, str]] | None = None
     if height_bands is not None:
         bands = [(float(b[0]), str(b[1])) for b in height_bands]
@@ -1177,14 +1243,18 @@ def generate_terrain_diffusion(
         map_name,
         region=tuple(region) if region else (0, 0, 128, 128),  # type: ignore[arg-type]
         scale=scale,
+        seed=seed,
         origin=(origin[0], origin[1], origin[2]) if origin else (0.0, 0.0, 0.0),
         cell_size=cell_size,
         sea_level_m=sea_level_m,
+        normalize_elevation=normalize_elevation,
+        floor_thickness_units=floor_thickness_units,
         world_units_per_meter=world_units_per_meter,
         server_url=server_url,
         height_bands=bands,
         merge_strips=merge_strips,
         max_brushes=max_brushes,
+        allow_constant=allow_constant,
     )
 
 
