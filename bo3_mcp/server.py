@@ -7,7 +7,7 @@ import importlib
 
 from mcp.server.fastmcp import FastMCP
 
-from . import brushes, demo, entities, geometry, mapfile, paths, pipeline, scaffold, textures, zm
+from . import brushes, demo, entities, geometry, mapfile, paths, pipeline, scaffold, terrain, textures, zm
 
 mcp = FastMCP("bo3-mcp")
 
@@ -45,6 +45,7 @@ def _reload_mcp_modules() -> dict:
         "bo3_mcp.entities",     # depends on mapfile
         "bo3_mcp.gsc",          # depends on stdlib only
         "bo3_mcp.geometry",     # depends on brushes, mapfile, paths, entities
+        "bo3_mcp.terrain",      # depends on brushes, geometry, mapfile, paths
         "bo3_mcp.zm",           # depends on brushes, entities, geometry, gsc, mapfile, paths
         "bo3_mcp.scaffold",     # depends on paths, mapfile
         "bo3_mcp.pipeline",     # depends on paths
@@ -1013,6 +1014,114 @@ def add_doorway_to_wall(
         map_name, _xyz(wall_mins), _xyz(wall_maxs),
         _xyz(opening_mins), _xyz(opening_maxs),
         texture=texture,
+    )
+
+
+# --- Terrain generation ----------------------------------------------------
+
+
+@mcp.tool()
+def heightmap_to_brushes(
+    map_name: str,
+    heightmap: list[list[float]],
+    origin: list[float] | None = None,
+    cell_size: float = 64.0,
+    height_scale: float = 1.0,
+    texture: str = "t7_concrete_pebbles_cracked",
+    height_bands: list[list] | None = None,
+    skip_below: float = 0.0,
+    max_brushes: int = 8192,
+    merge_strips: bool = False,
+) -> dict:
+    """Import a 2D heightmap as a voxel grid of box brushes (BO3 terrain).
+
+    Each cell `heightmap[y][x]` becomes a box rising from `origin.z` by
+    `heightmap[y][x] * height_scale` units. Cell footprint = cell_size².
+
+    Args:
+        heightmap: NxM list of lists of floats (rows of columns).
+        origin: world position of (col=0, row=0) corner. Default (0,0,0).
+        cell_size: XY extent per cell (default 64).
+        height_scale: multiplier on heightmap values to get world Z.
+        texture: fallback texture name.
+        height_bands: per-elevation textures as `[[top_z, "tex"], ...]`,
+            first match wins. Example:
+                `[[20, "dirt"], [80, "rock"], [1e9, "snow"]]`
+        skip_below: cells with height <= this (pre-scale) are omitted —
+            use for carving valleys/water holes.
+        max_brushes: safety budget; raises if exceeded.
+        merge_strips: collapse same-height X-runs into single brushes
+            (30-60% reduction for smooth terrain).
+
+    Source can be anything: ML diffusion, Perlin, hand-painted PNG, etc.
+    For a no-ML baseline, see `generate_terrain` which pairs this with
+    a built-in value-noise generator."""
+    # Coerce JSON-friendly height_bands shape into the tuple form terrain.py expects
+    bands: list[tuple[float, str]] | None = None
+    if height_bands is not None:
+        bands = [(float(b[0]), str(b[1])) for b in height_bands]
+    return terrain.heightmap_to_brushes(
+        map_name, heightmap,
+        origin=(origin[0], origin[1], origin[2]) if origin else (0.0, 0.0, 0.0),
+        cell_size=cell_size,
+        height_scale=height_scale,
+        texture=texture,
+        height_bands=bands,
+        skip_below=skip_below,
+        max_brushes=max_brushes,
+        merge_strips=merge_strips,
+    )
+
+
+@mcp.tool()
+def generate_terrain(
+    map_name: str,
+    origin: list[float] | None = None,
+    grid_size: list[int] | None = None,
+    cell_size: float = 64.0,
+    max_height: float = 128.0,
+    seed: int | None = None,
+    scale: float = 0.08,
+    octaves: int = 4,
+    height_bands: list[list] | None = None,
+    merge_strips: bool = True,
+    skip_below_normalized: float = 0.0,
+) -> dict:
+    """One-shot: synthesize a value-noise heightmap and emit it as brushes.
+
+    Use this for outdoor environment terrain — hills, mesas, wasteland.
+    For more controlled terrain (specific shapes, ML-generated heightmaps,
+    hand-painted PNGs), use `heightmap_to_brushes` directly.
+
+    Args:
+        origin: world (0,0) corner of terrain. Default (0,0,0).
+        grid_size: [cols, rows]. Default 32x32.
+        cell_size: XY units per cell. Default 64.
+        max_height: world-Z units that heightmap=1.0 maps to. Default 128.
+        seed: noise seed for reproducibility.
+        scale: noise lattice spacing — smaller = broader features.
+            0.05 sweeping mountains, 0.15 rugged hills.
+        octaves: noise detail layers (more = rougher).
+        height_bands: per-elevation textures `[[top_z, "tex"], ...]`.
+            Default uses a wasteland palette (dirt/rock/crag).
+        merge_strips: brush-count optimization (default True).
+        skip_below_normalized: cells <= this (in normalized [0,1] space)
+            are omitted. Use 0.2-0.3 to leave dry-riverbeds/valleys."""
+    bands: list[tuple[float, str]] | None = None
+    if height_bands is not None:
+        bands = [(float(b[0]), str(b[1])) for b in height_bands]
+    return terrain.generate_terrain(
+        map_name,
+        origin=(origin[0], origin[1], origin[2]) if origin else (0.0, 0.0, 0.0),
+        grid_size=tuple(grid_size) if grid_size else (32, 32),  # type: ignore[arg-type]
+        cell_size=cell_size,
+        max_height=max_height,
+        seed=seed,
+        scale=scale,
+        octaves=octaves,
+        height_bands=bands,
+        merge_strips=merge_strips,
+        skip_below_normalized=skip_below_normalized,
     )
 
 
