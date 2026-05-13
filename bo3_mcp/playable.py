@@ -216,15 +216,19 @@ def make_playable_zombie_foundation(
 
     # ── 8. arena_zone — interior spawn_locations.
     # WARNING (verified May 13 2026 playtest): the interior spawn_location
-    # pattern in arena/vault zones is PARTIALLY WORKING / buggy — zombies
-    # spawn but AI tracking glitches (they "blink in" rather than rise,
-    # tracking is unreliable). This pattern exists in zm_demo_v3 itself
-    # which has the same bug — so this is a BO3 framework limitation, not
-    # an MCP regression. We keep it because demo-equivalent behavior is
-    # what's documented; future versions should consider replacing interior
-    # spawners in arena/vault with the verified barricade+riser+courtyard
-    # pattern around the zone perimeter. Spawners stay at z=16 (floor
-    # surface) — that part is correct.
+    # pattern as currently encoded by this MCP is buggy — zombies spawn but
+    # AI tracking glitches (they "blink in" rather than rise, tracking is
+    # unreliable). Side-by-side playtest of zm_foundation_v1 vs zm_demo_v3
+    # confirmed both have the SAME bug, with byte-identical entity layouts.
+    # That proves the *current MCP recipe* is broken, NOT that BO3 itself
+    # cannot do non-barricade spawns. Treyarch's stock maps presumably
+    # have a working version; we just haven't reproduced it yet. The
+    # missing piece is unknown — could be an auxiliary entity, a wrong
+    # location_type, a script_string link, navmesh-snap, etc. This is an
+    # open Phase 2 investigation. Keep the spawners here for now since
+    # they DO at least produce zombies (and demo equivalence is the
+    # baseline), but treat the engagement as best-effort until fixed.
+    # Spawners at z=16 (floor surface) — that part is correct.
     arena_wall_buys = [
         {"weapon": "smg_standard", "origin": (320, -496, 8), "angles": (0, 0, 0)},
         {"weapon": "ar_standard",  "origin": (320, 496, 8),  "angles": (0, 180, 0)},
@@ -293,8 +297,8 @@ def make_playable_zombie_foundation(
         # Zombie engagement status, per zone, as of May 13 2026 playtest:
         "zone_engagement_status": {
             "start_zone": "VERIFIED — barricade+riser+courtyard pattern, zombies rise/vault/path correctly",
-            "arena_zone": "BUGGY — interior spawn_location pattern; zombies blink in, tracking glitchy (same in zm_demo_v3 — BO3 framework quirk)",
-            "vault_zone": "BUGGY — same interior spawn_location pattern as arena",
+            "arena_zone": "MCP-UNVERIFIED — interior spawn_location pattern; zombies blink in, tracking glitchy. Same recipe-level bug in zm_demo_v3 (NOT a BO3 framework limitation — Phase 2 will hunt for a stock-derived working version).",
+            "vault_zone": "MCP-UNVERIFIED — same interior spawn_location pattern as arena",
         },
         "zone_graph_edges": [
             ("start_zone", "arena_zone", "enter_arena", 500),
@@ -543,6 +547,27 @@ def validate_playable_contract(
         "spawners:all spawn_structs zone-linked",
         len(unlinked_structs) == 0 and len(spawn_structs) >= 1,
         f"{len(spawn_structs)} spawn structs, {len(unlinked_structs)} unlinked (valid targetnames: {sorted(valid_targetnames)})",
+    ))
+
+    # Spawn struct script_string — MUST be set or the AI behavior tree
+    # never fires. Treyarch's stock zm_template_test.map uses
+    # "find_flesh" on interior risers and the barricade-link tag (e.g.
+    # "receiver_set_entry_a" or auto-generated window_<zone>_<x>_<y>) on
+    # barricade-paired ones. Missing script_string = zombies spawn but
+    # stand still — confirmed runtime bug in zm_foundation_v1 v22.7 arena
+    # vs zm_demo_v3 arena (both had the same missing-script_string bug).
+    structs_without_script_string = [
+        ent for ent in spawn_structs
+        if not (ent.kvps.get("script_string") or "").strip()
+    ]
+    checks.append(_check(
+        "spawners:all spawn_structs have script_string set",
+        len(structs_without_script_string) == 0,
+        "all have script_string (find_flesh or barricade link)"
+        if not structs_without_script_string
+        else f"{len(structs_without_script_string)}/{len(spawn_structs)} structs missing script_string "
+        f"— zombies will spawn but AI won't engage. Set script_string='find_flesh' for interior "
+        f"risers or the barricade's link tag for window-paired ones.",
     ))
 
     # Spawn struct Z values — should sit at floor surface (z=16 conventionally,

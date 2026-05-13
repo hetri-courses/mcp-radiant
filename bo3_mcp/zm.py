@@ -451,28 +451,43 @@ def add_zombie_spawner(
     zone_name: str | None = None,
     count: int = 9999,
     location_type: str = "spawn_location",
+    script_string: str | None = None,
 ) -> dict:
     """Place a zombie spawner — TWO entities:
 
     1. An `actor_spawner_zm_factory_zombie` (the AI factory at `origin`).
     2. A sibling `script_struct` at the same origin, tagged
-       `targetname "<zone>_spawners"` and `script_noteworthy "<location_type>"`.
+       `targetname "<zone>_spawners"`, `script_noteworthy "<location_type>"`,
+       and `script_string "<script_string>"` (defaults to `"find_flesh"`).
 
-    Pass `zone_name` (e.g. `"cryo_zone"` — with or without the `_zone` suffix)
-    to wire the spawn position to that zone. The framework's zone_init reads
-    `zone.volumes[0].target` (which `add_zombie_zone` sets to `<zone>_spawners`)
-    and walks the matching script_struct array to discover spawn points.
-    **Spawners without a `zone_name` will not produce zombies in that zone** —
-    spatial overlap alone is insufficient.
+    **`script_string="find_flesh"` is CRITICAL.** Without it, zombies spawn
+    but their AI behavior tree is never triggered — they appear and stand
+    still, or wander aimlessly. Verified on May 13 2026 by comparing this
+    MCP's broken output to Treyarch's stock `zm_template_test.map`, which
+    uses `script_string="find_flesh"` on every interior riser_location.
+    (Barricade-paired risers use the barricade's link tag instead, e.g.
+    `"receiver_set_entry_a"` or the auto-generated `add_zombie_window`
+    script_string.)
+
+    Pass `zone_name` (e.g. `"cryo_zone"` — with or without the `_zone`
+    suffix) to wire the spawn position to that zone. The framework's
+    zone_init reads `zone.volumes[0].target` (which `add_zombie_zone` sets
+    to `<zone>_spawners`) and walks the matching script_struct array to
+    discover spawn points.
 
     `location_type` controls how the zombie appears (per `_zm_zonemgr.gsc:368`):
       - `"spawn_location"` — walks in (default, basic zombie)
-      - `"riser_location"` — rises from the ground (dramatic, zm_giant pattern)
+      - `"riser_location"` — rises from the ground (zm_template_test pattern)
       - `"faller_location"` — falls from above
       - `"custom_spawner_entry"` — script-driven entry
 
-    Pattern (KVPs) extracted from `_prefabs/zm/zm_giant/script/zm_giant_nodes.map`
-    entities 60 (script_struct spawn_location) + 250 (actor_spawner_zm_factory_zombie).
+    `script_string` defaults to `"find_flesh"` (the standard pursue-player
+    AI behavior). Override only when linking to a barricade prefab or a
+    custom GSC handler.
+
+    Pattern verified against `zm_template_test.map` entities 3, 5 (interior
+    `riser_location` with `script_string="find_flesh"`) and 27 (actor
+    factory). Earlier reference to `zm_giant_nodes.map` may be stale.
     """
     target = paths.map_source(map_name)
     mf = _load(target)
@@ -503,6 +518,10 @@ def add_zombie_spawner(
         },
     )
 
+    # Default script_string to "find_flesh" (standard Treyarch pursue-player
+    # AI behavior). Override only when linking to a barricade or custom handler.
+    effective_script_string = script_string if script_string is not None else "find_flesh"
+
     location_struct = None
     if zone_name is not None:
         canonical_zone = zone_name if zone_name.endswith("_zone") else f"{zone_name}_zone"
@@ -514,6 +533,7 @@ def add_zombie_spawner(
             layer="000_Global/Enemies/Zombies",
             kvps={
                 "script_noteworthy": location_type,
+                "script_string": effective_script_string,
                 "targetname": f"{canonical_zone}_spawners",
                 "_color": "0.929 0.957 0.365",
             },
@@ -532,6 +552,7 @@ def add_zombie_spawner(
             f"{canonical_zone}_spawners" if zone_name is not None else None
         ),
         "location_type": location_type if zone_name is not None else None,
+        "script_string": effective_script_string if zone_name is not None else None,
     }
 
 
