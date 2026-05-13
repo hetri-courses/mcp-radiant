@@ -774,7 +774,124 @@ def generate_terrain_diffusion(
         "floor_thickness_units": floor_thickness_units,
         "world_units_per_meter": world_units_per_meter,
     }
+
+    # JSON sidecar — persist the SCALED heightmap (in BO3 z-units) and
+    # the geometric params used. Lets later tools (place_zombie_spawner_on_terrain,
+    # flatten_terrain_pad, future re-generation diffs) query the terrain
+    # surface at any (x, y) without re-fetching from the server.
+    import json
+    sidecar_path = _terrain_sidecar_path(map_name)
+    sidecar_data = {
+        "version": 1,
+        "map_name": map_name,
+        "source": "terrain-diffusion",
+        "region": list(region),
+        "scale": scale,
+        "seed": seed,
+        "origin": list(origin),
+        "cell_size": cell_size,
+        "world_units_per_meter": world_units_per_meter,
+        "effective_sea_level_m": effective_sea_level_m,
+        "normalize_elevation": normalize_elevation,
+        "floor_thickness_units": floor_thickness_units,
+        # Scaled heightmap: each cell's TOP z OFFSET from origin.z (in
+        # world units). Add origin[2] to get absolute world Z of the
+        # terrain top at that cell.
+        "scaled_heightmap": scaled,
+        "min_elev_m": meta["min_elev_m"],
+        "max_elev_m": meta["max_elev_m"],
+        "elev_range_m": meta["elev_range_m"],
+    }
+    try:
+        os.makedirs(os.path.dirname(sidecar_path), exist_ok=True)
+        with open(sidecar_path, "w", encoding="utf-8") as f:
+            json.dump(sidecar_data, f)
+        result["terrain_sidecar"] = sidecar_path
+    except OSError as e:
+        result["terrain_sidecar_error"] = str(e)
     return result
+
+
+def _terrain_sidecar_path(map_name: str) -> str:
+    """Path of the JSON sidecar that holds the heightmap for `map_name`.
+
+    Located alongside the .map file at
+    `<MOD_TOOLS>/map_source/zm/<map_name>_terrain.json`. Written by
+    `generate_terrain_diffusion`, read by `terrain_height_at_xy` and
+    `place_zombie_spawner_on_terrain`. One sidecar per map (overwrites
+    on re-generate).
+    """
+    map_path = paths.map_source(map_name)
+    base = os.path.dirname(str(map_path))
+    return os.path.join(base, f"{map_name}_terrain.json")
+
+
+def terrain_height_at_xy(
+    map_name: str,
+    x: float,
+    y: float,
+) -> dict:
+    """Return the terrain top Z at world (x, y) for a map whose terrain was
+    produced by `generate_terrain_diffusion` (or any caller that wrote the
+    sidecar). Reads `<map_name>_terrain.json` and looks up the cell containing
+    (x, y).
+
+    Returns:
+        {
+          "found": bool,
+          "z": float,  # absolute world Z of terrain top (origin.z + scaled height)
+          "cell": (col, row),
+          "scaled_height_units": float,  # height ABOVE origin.z
+          "sidecar_path": str,
+        }
+        If (x, y) is outside the terrain footprint, `found` is False and
+        z falls back to origin.z (the BO3 base elevation).
+    """
+    import json
+    sidecar_path = _terrain_sidecar_path(map_name)
+    if not os.path.isfile(sidecar_path):
+        raise FileNotFoundError(
+            f"Terrain sidecar not found at {sidecar_path!r}. "
+            f"Did you call generate_terrain_diffusion for this map first?"
+        )
+    with open(sidecar_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    ox, oy, oz = data["origin"]
+    cell_size = float(data["cell_size"])
+    heightmap = data["scaled_heightmap"]
+    rows = len(heightmap)
+    cols = len(heightmap[0]) if rows else 0
+
+    # Map world (x, y) into cell indices. The terrain spans:
+    #   x: [ox, ox + cols*cell_size]
+    #   y: [oy, oy + rows*cell_size]
+    col_f = (x - ox) / cell_size
+    row_f = (y - oy) / cell_size
+    col = int(col_f)
+    row = int(row_f)
+    in_bounds = 0 <= col < cols and 0 <= row < rows
+
+    if not in_bounds:
+        return {
+            "found": False,
+            "z": float(oz),
+            "cell": (col, row),
+            "scaled_height_units": 0.0,
+            "sidecar_path": sidecar_path,
+            "reason": (
+                f"world ({x}, {y}) outside terrain footprint "
+                f"({ox}..{ox + cols * cell_size}, {oy}..{oy + rows * cell_size})"
+            ),
+        }
+    scaled_h = float(heightmap[row][col])
+    return {
+        "found": True,
+        "z": float(oz) + scaled_h,
+        "cell": (col, row),
+        "scaled_height_units": scaled_h,
+        "sidecar_path": sidecar_path,
+    }
 
 
 def start_terrain_diffusion_server(

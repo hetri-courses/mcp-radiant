@@ -202,6 +202,81 @@ def validate_playable_contract(
 
 
 @mcp.tool()
+def terrain_height_at_xy(map_name: str, x: float, y: float) -> dict:
+    """Return the terrain top Z at world (x, y) for a map whose terrain was
+    produced by `generate_terrain_diffusion`. Reads the JSON sidecar that
+    was written alongside the .map file at terrain-gen time.
+
+    Use this when placing entities ON the terrain surface (e.g., zombie
+    spawners, perk machines, mystery box) so they sit flush, not buried
+    or floating.
+
+    Returns dict with:
+      - found: True if (x,y) is inside the terrain footprint
+      - z: absolute world Z of the terrain top (origin.z + scaled height)
+      - cell: (col, row) inside the heightmap
+      - scaled_height_units: how high above origin.z the terrain rises here
+      - sidecar_path: where the heightmap was read from
+    """
+    return terrain.terrain_height_at_xy(map_name, x, y)
+
+
+@mcp.tool()
+def make_terrain_zombie_arena(
+    map_name: str,
+    terrain_seed: int = 42,
+    terrain_region: list[int] | None = None,
+    terrain_scale: int = 1,
+    world_units_per_meter: float = 0.3,
+    floor_thickness_units: float = 16.0,
+    normalize_elevation: bool = True,
+    terrain_origin: list[float] | None = None,
+    terrain_cell_size: float = 64.0,
+    spawner_offsets: list[list[float]] | None = None,
+    spawner_z_offset: float = 4.0,
+    terrain_server_url: str = "http://localhost:8000",
+    overwrite: bool = False,
+) -> dict:
+    """**Diffusion terrain inside a playable BO3 zombie map.**
+
+    Combines `make_playable_zombie_foundation` (v22.10 verified pattern) with
+    `generate_terrain_diffusion`: the arena_zone's flat floor is replaced
+    by voxel terrain generated from xandergos/terrain-diffusion. Zombie
+    spawners in the arena are placed ON the terrain surface using
+    `terrain_height_at_xy` to look up each Z from the heightmap sidecar.
+
+    Layout: start_zone (barricaded starter, verified) → 500pt door →
+    arena_zone (terrain floor + risers on surface) → 1500pt door →
+    vault_zone (mystery box / PaP / power switch).
+
+    Requires the terrain-diffusion server running. See CLAUDE.md
+    "Terrain-diffusion runtime". Recommended: call
+    `preview_terrain_diffusion_region(seed=..., region=...)` first to
+    confirm the terrain has usable relief before generating.
+
+    Defaults are conservative (small 16x16 region, gentle wupm=0.3) to
+    keep navmesh connected. Scale up once you've confirmed the shape works.
+    """
+    return playable.make_terrain_zombie_arena(
+        map_name,
+        terrain_seed=terrain_seed,
+        terrain_region=tuple(terrain_region) if terrain_region else (0, 0, 16, 16),  # type: ignore[arg-type]
+        terrain_scale=terrain_scale,
+        world_units_per_meter=world_units_per_meter,
+        floor_thickness_units=floor_thickness_units,
+        normalize_elevation=normalize_elevation,
+        terrain_origin=tuple(terrain_origin) if terrain_origin else (0.0, -512.0, 0.0),  # type: ignore[arg-type]
+        terrain_cell_size=terrain_cell_size,
+        spawner_offsets=tuple(tuple(o) for o in spawner_offsets) if spawner_offsets else (
+            (256, 256), (768, 256), (256, 768), (768, 768),
+        ),  # type: ignore[arg-type]
+        spawner_z_offset=spawner_z_offset,
+        terrain_server_url=terrain_server_url,
+        overwrite=overwrite,
+    )
+
+
+@mcp.tool()
 def make_playable_zombie_foundation(
     map_name: str,
     layout: str = "three_zone",

@@ -36,7 +36,7 @@ import os
 import re
 from typing import Any, Literal
 
-from . import geometry, mapfile, paths, scaffold, zm
+from . import geometry, mapfile, paths, scaffold, terrain, zm
 
 PlayableLayout = Literal["three_zone"]  # "two_zone_minimal" / "single_arena" → future, currently UNVERIFIED
 
@@ -356,6 +356,333 @@ def make_playable_zombie_foundation(
     }
 
     return {"summary": summary, "playable_contract": contract}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Terrain-integrated recipe — diffusion terrain INSIDE a verified playable shell
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def make_terrain_zombie_arena(
+    map_name: str,
+    *,
+    terrain_seed: int = 42,
+    terrain_region: tuple[int, int, int, int] = (0, 0, 16, 16),
+    terrain_scale: int = 1,
+    world_units_per_meter: float = 0.3,
+    floor_thickness_units: float = 16.0,
+    normalize_elevation: bool = True,
+    terrain_origin: tuple[float, float, float] = (0.0, -512.0, 0.0),
+    terrain_cell_size: float = 64.0,
+    spawner_offsets: tuple[tuple[float, float], ...] = (
+        (256, 256), (768, 256), (256, 768), (768, 768),
+    ),
+    spawner_z_offset: float = 4.0,
+    terrain_server_url: str = "http://localhost:8000",
+    overwrite: bool = False,
+) -> dict[str, Any]:
+    """Diffusion terrain inside a playable BO3 zombie map.
+
+    Layout (matches the v22.10 verified foundation, but arena_zone's flat
+    floor is REPLACED by terrain-diffusion-generated voxel terrain):
+
+      start_zone (small barricaded starter, verified pattern)
+          │
+          │  buyable door (500 pts, "enter_arena")
+          ▼
+      arena_zone (terrain inside — risers placed ON the terrain surface)
+          │
+          │  buyable door (1500 pts, "enter_vault")
+          ▼
+      vault_zone (mystery box + PaP + power switch — unchanged)
+
+    Architecture:
+      1. The start_zone pattern is verified working (v22.10 playtest).
+         Player enters here, fights through the barricade windows.
+      2. Opening the 500pt door activates arena_zone. The "flat arena
+         floor" at z=[0,16] becomes diffusion terrain instead — same
+         worldspawn brushes, just NOT flat. Zombies in arena rise from
+         the terrain surface via riser_location + script_string=
+         "find_flesh" (v22.9 fix).
+      3. terrain_height_at_xy() reads the sidecar JSON written by
+         generate_terrain_diffusion to compute the z of each spawner.
+
+    Args:
+      map_name: must start with "zm_".
+      terrain_seed: world seed for the diffusion model. Same seed →
+        same terrain (deterministic).
+      terrain_region: (i1,j1,i2,j2) pixel bbox in the model's output
+        space. Default 16x16 = 256 cells = tiny but quick to generate.
+        Step up to 32x32 (1024 cells) once you've confirmed the shape
+        works. Note: terrain footprint in BO3 = (i2-i1) * cell_size by
+        (j2-j1) * cell_size.
+      terrain_scale: resolution multiplier (1 = base, 2/4/8 = finer).
+      world_units_per_meter: BO3 inches per meter. Default 0.3 keeps
+        navmesh-safe (small steps); raise to 0.5-1.0 for more dramatic
+        relief at the cost of zombie pathing reliability on stepped cells.
+      floor_thickness_units: solid ground under the lowest terrain cell.
+        Default 16 (= one floor slab thickness) so the lowest cell is
+        flush with the rest of the map's floor convention.
+      normalize_elevation: True (default) uses the region's local min
+        as effective sea level — works for any region including ocean.
+      terrain_origin: world (x, y, z) of the terrain footprint's
+        (i1, j1) corner. Default (0, -512, 0) places terrain in the
+        arena_zone bounds (arena spans x=[-128,768], y=[-512,512]).
+      terrain_cell_size: XY size of each heightmap cell in BO3 units.
+        Default 64. With default 16x16 region, terrain spans 1024x1024
+        BO3 units — small but fits inside arena_zone.
+      spawner_offsets: (dx, dy) tuples relative to terrain_origin.
+        Each spawner's z is auto-computed via terrain_height_at_xy.
+        Default 4 corners of a 1024x1024 terrain.
+      spawner_z_offset: small upward offset so spawner sits ON the
+        terrain surface, not buried in it. Default 4.
+      terrain_server_url: terrain-diffusion API endpoint.
+      overwrite: overwrite the scaffold if it exists.
+
+    Returns: dict with `summary`, `playable_contract`, and
+    `terrain_meta` (model output stats, sidecar path).
+
+    Requires the terrain-diffusion server to be RUNNING. See CLAUDE.md
+    "Terrain-diffusion runtime" for setup. Best practice: call
+    `preview_terrain_diffusion_region(seed=terrain_seed, region=
+    terrain_region)` first to scout values before running this recipe.
+    """
+    if not map_name.startswith("zm_"):
+        raise ValueError(f"map name must start with 'zm_' (got {map_name!r})")
+
+    summary: dict[str, Any] = {
+        "name": map_name,
+        "layout": "terrain_arena",
+        "steps": [],
+    }
+
+    # ── 1. Scaffold + foundation geometry (matches make_playable_zombie_foundation)
+    scaffold.create_zombie_map(map_name, overwrite=overwrite)
+    summary["steps"].append({"scaffolded": map_name})
+
+    # ── 2. Carve all 3 rooms — note: the ARENA room geometry is still
+    # carved (walls + ceiling) — we just generate terrain ON the floor.
+    # The room's solid floor brush + the terrain brushes coexist in
+    # worldspawn; cod2map collapses overlap correctly.
+    geometry.carve_room_with_openings(
+        map_name,
+        mins=(-512, -256, 0), maxs=(-128, 256, 256),
+        openings=[
+            {"side": "east",  "width": 80, "height": 96},
+            {"side": "south", "width": 64, "height": 48, "bottom": 48},
+            {"side": "north", "width": 64, "height": 48, "bottom": 48},
+        ],
+        wall_thickness=16,
+    )
+    geometry.carve_room_with_openings(
+        map_name,
+        mins=(-128, -512, 0), maxs=(768, 512, 384),
+        openings=[
+            {"side": "west", "width": 80, "height": 96},
+            {"side": "east", "width": 80, "height": 96},
+        ],
+        wall_thickness=16,
+    )
+    geometry.carve_room_with_openings(
+        map_name,
+        mins=(768, -256, 0), maxs=(1280, 256, 256),
+        openings=[{"side": "west", "width": 80, "height": 96}],
+        wall_thickness=16,
+    )
+    summary["steps"].append({"rooms_carved": 3})
+
+    # ── 3. start_zone outdoor courtyards (verified barricade pattern)
+    geometry.add_outdoor_courtyard(
+        map_name, mins=(-512, -432, 0), maxs=(-128, -256, 256),
+        open_side="north",
+    )
+    geometry.add_outdoor_courtyard(
+        map_name, mins=(-512, 256, 0), maxs=(-128, 432, 256),
+        open_side="south",
+    )
+    zm.add_light(map_name, origin=(-320, -344, 200),
+                 color=(0.85, 0.9, 1.0), radius=320, stops=4.0)
+    zm.add_light(map_name, origin=(-320, 344, 200),
+                 color=(0.85, 0.9, 1.0), radius=320, stops=4.0)
+    summary["steps"].append({"courtyards_built": 2, "courtyard_lights": 2})
+
+    # ── 4. Zones + zone graph (same as foundation)
+    zm.add_zombie_zone(
+        map_name, "start_zone",
+        volume_center=(-320, 0, 128), volume_size=(384, 512, 256),
+        is_starting_zone=True,
+    )
+    zm.add_zombie_zone(
+        map_name, "arena_zone",
+        volume_center=(320, 0, 192), volume_size=(896, 1024, 384),
+    )
+    zm.add_zombie_zone(
+        map_name, "vault_zone",
+        volume_center=(1024, 0, 128), volume_size=(512, 512, 256),
+    )
+    zm.add_buyable_door(
+        map_name,
+        door_mins=(-128, -40, 16), door_maxs=(-112, 40, 112),
+        cost=500, script_flag="enter_arena",
+        connects=("start_zone", "arena_zone"),
+        door_model_yaw=90,
+    )
+    zm.add_buyable_door(
+        map_name,
+        door_mins=(768, -40, 16), door_maxs=(784, 40, 112),
+        cost=1500, script_flag="enter_vault",
+        connects=("arena_zone", "vault_zone"),
+        door_model_yaw=90,
+    )
+    summary["steps"].append({"zones_registered": 3, "doors_added": 2})
+
+    # ── 5. Player spawn, start_zone barricade windows + risers
+    zm.add_player_spawn(map_name, origin=(-320, 0, 32), angles=(0, 0, 0))
+    zm.furnish_zone(
+        map_name, "start_zone",
+        wall_buys=[{"weapon": "pistol_burst",
+                    "origin": (-494, -100, 8),
+                    "angles": (0, 270, 0)}],
+        light_origins=[(-320, 0, 200)],
+        light_color=(1.0, 0.95, 0.85),
+        light_radius=320, light_stops=4.0,
+    )
+    zm.add_zombie_window(map_name, origin=(-320, -240, 16),
+                         yaw=180, zone_name="start_zone")
+    zm.add_zombie_window(map_name, origin=(-320, 240, 16),
+                         yaw=0, zone_name="start_zone")
+    summary["steps"].append({"start_zone_furnished": True})
+
+    # ── 6. GENERATE THE TERRAIN inside arena_zone bounds.
+    # The terrain origin (and footprint) should fit inside arena_zone,
+    # which spans roughly x=[-128, 768], y=[-512, 512]. With 16x16 cells
+    # at 64 unit cell_size, terrain spans 1024x1024 BO3 units. The
+    # default terrain_origin=(0, -512, 0) lands in the southern part of
+    # arena, which is enough to test integration.
+    terrain_result = terrain.generate_terrain_diffusion(
+        map_name,
+        region=terrain_region,
+        scale=terrain_scale,
+        seed=terrain_seed,
+        origin=terrain_origin,
+        cell_size=terrain_cell_size,
+        normalize_elevation=normalize_elevation,
+        floor_thickness_units=floor_thickness_units,
+        world_units_per_meter=world_units_per_meter,
+        server_url=terrain_server_url,
+        merge_strips=True,
+        max_brushes=32768,
+    )
+    summary["steps"].append({
+        "terrain_generated": True,
+        "brushes_added": terrain_result.get("brushes_added"),
+        "elev_range_m": terrain_result["model_meta"].get("elev_range_m"),
+        "sidecar": terrain_result.get("terrain_sidecar"),
+    })
+
+    # ── 7. Place arena_zone risers ON the terrain surface, using the
+    # heightmap sidecar to compute each Z. spawner_z_offset adds a few
+    # units so the spawner sits on the surface, not buried.
+    arena_spawners: list[dict] = []
+    for (dx, dy) in spawner_offsets:
+        world_x = terrain_origin[0] + dx
+        world_y = terrain_origin[1] + dy
+        h = terrain.terrain_height_at_xy(map_name, world_x, world_y)
+        if not h["found"]:
+            # Out of bounds — skip this spawner, log it
+            arena_spawners.append({"offset": (dx, dy), "skipped": h.get("reason")})
+            continue
+        spawn_z = h["z"] + spawner_z_offset
+        spawn_info = zm.add_zombie_spawner(
+            map_name,
+            origin=(world_x, world_y, spawn_z),
+            zone_name="arena_zone",
+            location_type="riser_location",
+            # script_string defaults to "find_flesh" — the v22.9 fix
+        )
+        arena_spawners.append({
+            "offset": (dx, dy), "world": (world_x, world_y, spawn_z),
+            "terrain_z": h["z"], "factory_guid": spawn_info["factory_guid"],
+        })
+    summary["steps"].append({"arena_terrain_spawners_placed": len(arena_spawners),
+                              "arena_spawners": arena_spawners})
+
+    # ── 8. arena_zone interior lights (no perks/wall_buys in this layout —
+    # the terrain doesn't have flat walls to mount them on yet).
+    zm.add_light(map_name, origin=(100, -240, 320),
+                 color=(0.9, 0.95, 1.0), radius=480, stops=5.0)
+    zm.add_light(map_name, origin=(100, 240, 320),
+                 color=(0.9, 0.95, 1.0), radius=480, stops=5.0)
+    zm.add_light(map_name, origin=(540, -240, 320),
+                 color=(0.9, 0.95, 1.0), radius=480, stops=5.0)
+    zm.add_light(map_name, origin=(540, 240, 320),
+                 color=(0.9, 0.95, 1.0), radius=480, stops=5.0)
+    summary["steps"].append({"arena_lights": 4})
+
+    # ── 9. vault_zone — unchanged from foundation (interior spawners +
+    # mystery box + PaP + power switch).
+    zm.furnish_zone(
+        map_name, "vault_zone",
+        spawner_origins=[(810, -200, 16), (810, 200, 16)],
+        light_origins=[(1024, 0, 200)],
+        light_color=(1.0, 0.85, 0.6),
+        light_radius=384, light_stops=4.5,
+    )
+    zm.add_mystery_box(map_name, origin=(1024, 0, 16), angles=(0, 0, 0))
+    zm.add_pack_a_punch(map_name, origin=(1024, 216, 20), angles=(0, 90, 0))
+    zm.add_power_switch(map_name, origin=(1024, -232, 24), angles=(0, 180, 0))
+    summary["steps"].append({"vault_zone_furnished": True})
+
+    # ── 10. Lighting kit (sky shell + sun + umbra + fpstool).
+    zm.add_lighting_kit(
+        map_name,
+        playable_mins=(-512, -512, 0),
+        playable_maxs=(1280, 512, 384),
+        buffer=128,
+    )
+    summary["steps"].append({"lighting_kit": "applied"})
+
+    contract = {
+        "map_name": map_name,
+        "layout": "terrain_arena",
+        "zones": ["start_zone", "arena_zone", "vault_zone"],
+        "starting_zone": "start_zone",
+        "zone_engagement_status": {
+            "start_zone": "VERIFIED — barricade+riser+courtyard pattern",
+            "arena_zone": "TERRAIN-MODE — diffusion terrain inside, risers on terrain surface, script_string=find_flesh (v22.9 pattern)",
+            "vault_zone": "MCP-UNVERIFIED interior spawn_location pattern (unchanged from foundation)",
+        },
+        "terrain": {
+            "source": "terrain-diffusion",
+            "seed": terrain_seed,
+            "region": list(terrain_region),
+            "scale": terrain_scale,
+            "world_units_per_meter": world_units_per_meter,
+            "normalize_elevation": normalize_elevation,
+            "floor_thickness_units": floor_thickness_units,
+            "origin": list(terrain_origin),
+            "cell_size": terrain_cell_size,
+            "brushes_added": terrain_result.get("brushes_added"),
+            "elev_range_m": terrain_result["model_meta"].get("elev_range_m"),
+            "sidecar_path": terrain_result.get("terrain_sidecar"),
+            "spawner_placements": arena_spawners,
+        },
+        "next_build_command": f"build_full('{map_name}', quality='draft', skip_gdtdb=False)",
+        "runtime_smoke_test_required": True,
+        "runtime_checklist": [
+            "Map loads in BO3",
+            "start_zone lit, zombies climb through barricades",
+            "Buy the 500pt door, enter arena",
+            "Arena floor is voxel terrain (not flat)",
+            "Risers emerge from the TERRAIN SURFACE (not buried, not floating)",
+            "Risers run find_flesh and pursue the player",
+            "Player can walk on the terrain without falling through",
+            "No console/runtime script errors",
+        ],
+    }
+
+    return {"summary": summary, "playable_contract": contract,
+            "terrain_meta": terrain_result.get("model_meta", {})}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
