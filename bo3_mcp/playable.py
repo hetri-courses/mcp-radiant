@@ -367,17 +367,31 @@ def make_terrain_zombie_arena(
     map_name: str,
     *,
     terrain_seed: int = 42,
-    terrain_region: tuple[int, int, int, int] = (0, 0, 16, 16),
+    # 13x15 cells * 64 unit cell_size = 832x960 footprint.
+    # Fits INSIDE arena interior (864 wide x 992 deep) with 16-unit margins.
+    # v1 used 16x16 (1024x1024) which bled past the arena east wall (x=752)
+    # and put spawners at world x=768 — exactly ON the wall — so they
+    # spawned outside the playable area and died near vault. Don't repeat.
+    terrain_region: tuple[int, int, int, int] = (0, 0, 13, 15),
     terrain_scale: int = 1,
-    world_units_per_meter: float = 0.3,
+    world_units_per_meter: float = 0.5,  # was 0.3 — too subtle for the user
     floor_thickness_units: float = 16.0,
     normalize_elevation: bool = True,
-    terrain_origin: tuple[float, float, float] = (0.0, -512.0, 0.0),
+    # Arena interior: x=[-112, 752], y=[-496, 496]. Origin at (-96, -480, 0)
+    # gives 16-unit margin from west/south walls. Footprint (832x960) ends
+    # at (736, 480) — also 16 units from east/north walls. All clear.
+    terrain_origin: tuple[float, float, float] = (-96.0, -480.0, 0.0),
     terrain_cell_size: float = 64.0,
+    # Offsets relative to terrain_origin. With 13x15 cell footprint
+    # (832x960 units), valid offsets are (0..832, 0..960). These 4 land
+    # at world (96, -288), (544, -288), (96, 288), (544, 288) — all
+    # well inside arena interior (-112..752, -496..496).
     spawner_offsets: tuple[tuple[float, float], ...] = (
-        (256, 256), (768, 256), (256, 768), (768, 768),
+        (192, 192), (640, 192), (192, 768), (640, 768),
     ),
     spawner_z_offset: float = 4.0,
+    include_perks: bool = True,
+    include_wall_buys: bool = True,
     terrain_server_url: str = "http://localhost:8000",
     overwrite: bool = False,
 ) -> dict[str, Any]:
@@ -607,17 +621,40 @@ def make_terrain_zombie_arena(
     summary["steps"].append({"arena_terrain_spawners_placed": len(arena_spawners),
                               "arena_spawners": arena_spawners})
 
-    # ── 8. arena_zone interior lights (no perks/wall_buys in this layout —
-    # the terrain doesn't have flat walls to mount them on yet).
-    zm.add_light(map_name, origin=(100, -240, 320),
-                 color=(0.9, 0.95, 1.0), radius=480, stops=5.0)
-    zm.add_light(map_name, origin=(100, 240, 320),
-                 color=(0.9, 0.95, 1.0), radius=480, stops=5.0)
-    zm.add_light(map_name, origin=(540, -240, 320),
-                 color=(0.9, 0.95, 1.0), radius=480, stops=5.0)
-    zm.add_light(map_name, origin=(540, 240, 320),
-                 color=(0.9, 0.95, 1.0), radius=480, stops=5.0)
-    summary["steps"].append({"arena_lights": 4})
+    # ── 8. arena_zone gameplay objects (perks + wall_buys + lights).
+    # Earlier scope dropped these because "terrain on floor" — that was
+    # wrong, the user noticed missing perks. Wall_buys mount on the
+    # arena's walls (still flat). Perks sit at z=16 (floor convention);
+    # with terrain on top, low-relief areas may show perks slightly
+    # embedded — cosmetic, gameplay-functional. v22.13 candidate:
+    # terrain-aware perk Z via terrain_height_at_xy.
+    arena_wall_buys = [
+        {"weapon": "smg_standard", "origin": (320, -496, 8), "angles": (0, 0, 0)},
+        {"weapon": "ar_standard",  "origin": (320, 496, 8),  "angles": (0, 180, 0)},
+    ] if include_wall_buys else []
+    zm.furnish_zone(
+        map_name, "arena_zone",
+        perks=(["juggernaut", "speed_cola", "double_tap", "quick_revive"]
+               if include_perks else []),
+        perk_zone_center=(320, 0, 16),
+        perk_zone_size=(896, 1024, 0),
+        perk_margin=160,
+        wall_buys=arena_wall_buys,
+        # No spawner_origins here — terrain-aware spawners are added
+        # separately above with terrain_height_at_xy.
+        light_origins=[
+            (100, -240, 320), (100, 240, 320),
+            (540, -240, 320), (540, 240, 320),
+        ],
+        light_color=(0.9, 0.95, 1.0),
+        light_radius=480, light_stops=5.0,
+    )
+    summary["steps"].append({
+        "arena_furnished": True,
+        "perks": 4 if include_perks else 0,
+        "wall_buys": 2 if include_wall_buys else 0,
+        "lights": 4,
+    })
 
     # ── 9. vault_zone — unchanged from foundation (interior spawners +
     # mystery box + PaP + power switch).
@@ -907,9 +944,76 @@ def validate_playable_contract(
         f"risers or the barricade's link tag for window-paired ones.",
     ))
 
+    # Spawn struct XY position — must be inside the declared zone volume's
+    # XY bounds. v22.11 had spawners at world x=768 (arena's east wall
+    # position) which spawned zombies inside walls + bled into the vault
+    # zone. Catch this class of bug by checking each struct's XY against
+    # its zone's volume bounds (parsed from the info_volume brush).
+    structs_outside_zone_xy: list[tuple] = []
+    for ent in spawn_structs:
+        # Skip barricade-paired risers — they're INTENTIONALLY in courtyards
+        # outside the zone (zombies rise outside, vault through the barricade
+        # window into the zone). Identified by script_string != "find_flesh"
+        # (barricade-paired risers carry the barricade's link tag like
+        # "window_start_zone_-320_-240" or "receiver_set_entry_a").
+        script_string = ent.kvps.get("script_string") or ""
+        if script_string and script_string != "find_flesh":
+            continue
+        tn = ent.kvps.get("targetname") or ""
+        if not tn.endswith("_spawners"):
+            continue
+        zone_targetname = tn[: -len("_spawners")]
+        # Find the matching zone volume entity
+        zone_ent = next(
+            (z for z in mf.entities
+             if z.kvps.get("classname") == "info_volume"
+             and z.kvps.get("targetname") == zone_targetname),
+            None,
+        )
+        if zone_ent is None or not zone_ent.brushes:
+            # Can't check bounds — no zone volume brush found
+            continue
+        # Parse the zone volume brush's XY bounds. Brushes are opaque text,
+        # but we can extract the 6 face plane points and derive an axis-aligned
+        # bounding box. Quick approach: regex out all "( X Y Z )" tuples.
+        import re as _re
+        brush_text = zone_ent.brushes[0]
+        pts = _re.findall(r"\(\s*(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s*\)", brush_text)
+        if not pts:
+            continue
+        xs = [float(p[0]) for p in pts]
+        ys = [float(p[1]) for p in pts]
+        zone_xmin, zone_xmax = min(xs), max(xs)
+        zone_ymin, zone_ymax = min(ys), max(ys)
+        # Spawn struct XY
+        origin = (ent.kvps.get("origin") or "").split()
+        if len(origin) != 3:
+            continue
+        try:
+            sx, sy = float(origin[0]), float(origin[1])
+        except ValueError:
+            continue
+        if not (zone_xmin <= sx <= zone_xmax and zone_ymin <= sy <= zone_ymax):
+            structs_outside_zone_xy.append((
+                ent.guid, (sx, sy),
+                zone_targetname,
+                (zone_xmin, zone_ymin, zone_xmax, zone_ymax),
+            ))
+    checks.append(_check(
+        "spawners:all spawn_structs XY inside their zone volume",
+        len(structs_outside_zone_xy) == 0,
+        ("all spawners XY-bounded by their zone"
+         if not structs_outside_zone_xy
+         else f"{len(structs_outside_zone_xy)} struct(s) outside zone bounds: {structs_outside_zone_xy[:3]} "
+         "— these will spawn zombies in walls / wrong zones."),
+    ))
+
     # Spawn struct Z values — should sit at floor surface (z=16 conventionally,
     # or matching the underlying brush top); flag any that are obviously
     # floating (z > 32 in an enclosed room).
+    # Threshold relaxed for terrain-placed spawners: with world_units_per_meter
+    # up to ~1.0 and normalize_elevation, terrain top can reach ~80 units.
+    # z<=128 still catches "spawner at z=350 above an empty room" type bugs.
     floating_structs = []
     for ent in spawn_structs:
         origin = ent.kvps.get("origin", "")
@@ -917,14 +1021,14 @@ def validate_playable_contract(
         if len(parts) == 3:
             try:
                 z = float(parts[2])
-                if z > 32:
+                if z > 128:
                     floating_structs.append((ent.guid, z))
             except ValueError:
                 pass
     checks.append(_check(
-        "spawners:no floating spawn structs (z<=32)",
+        "spawners:no high-floating spawn structs (z<=128)",
         len(floating_structs) == 0,
-        "all at floor-level" if not floating_structs else f"FLOATING: {floating_structs}",
+        "all at plausible Z" if not floating_structs else f"FLOATING: {floating_structs}",
     ))
 
     # Interior point lights — at least one per zone

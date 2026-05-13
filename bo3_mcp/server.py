@@ -257,23 +257,27 @@ def make_terrain_zombie_arena(
     Defaults are conservative (small 16x16 region, gentle wupm=0.3) to
     keep navmesh connected. Scale up once you've confirmed the shape works.
     """
-    return playable.make_terrain_zombie_arena(
-        map_name,
-        terrain_seed=terrain_seed,
-        terrain_region=tuple(terrain_region) if terrain_region else (0, 0, 16, 16),  # type: ignore[arg-type]
-        terrain_scale=terrain_scale,
-        world_units_per_meter=world_units_per_meter,
-        floor_thickness_units=floor_thickness_units,
-        normalize_elevation=normalize_elevation,
-        terrain_origin=tuple(terrain_origin) if terrain_origin else (0.0, -512.0, 0.0),  # type: ignore[arg-type]
-        terrain_cell_size=terrain_cell_size,
-        spawner_offsets=tuple(tuple(o) for o in spawner_offsets) if spawner_offsets else (
-            (256, 256), (768, 256), (256, 768), (768, 768),
-        ),  # type: ignore[arg-type]
-        spawner_z_offset=spawner_z_offset,
-        terrain_server_url=terrain_server_url,
-        overwrite=overwrite,
-    )
+    # Pass explicit overrides only when provided. Otherwise let
+    # playable.make_terrain_zombie_arena use its own defaults (the source
+    # of truth — don't duplicate them here).
+    kwargs: dict = {
+        "terrain_seed": terrain_seed,
+        "terrain_scale": terrain_scale,
+        "world_units_per_meter": world_units_per_meter,
+        "floor_thickness_units": floor_thickness_units,
+        "normalize_elevation": normalize_elevation,
+        "terrain_cell_size": terrain_cell_size,
+        "spawner_z_offset": spawner_z_offset,
+        "terrain_server_url": terrain_server_url,
+        "overwrite": overwrite,
+    }
+    if terrain_region is not None:
+        kwargs["terrain_region"] = tuple(terrain_region)  # type: ignore[arg-type]
+    if terrain_origin is not None:
+        kwargs["terrain_origin"] = tuple(terrain_origin)  # type: ignore[arg-type]
+    if spawner_offsets is not None:
+        kwargs["spawner_offsets"] = tuple(tuple(o) for o in spawner_offsets)  # type: ignore[arg-type]
+    return playable.make_terrain_zombie_arena(map_name, **kwargs)
 
 
 @mcp.tool()
