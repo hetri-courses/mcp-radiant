@@ -52,11 +52,15 @@ def make_demo_map(name: str, *, overwrite: bool = False) -> dict:
     # start_zone has window openings on north + south walls (64w x 64h, bottom
     # at z=64 = waist height) — these are where zombies will rise outside and
     # walk through the barricade boards.
+    # Doorway height = 96 to match the Treyarch door model
+    # `p7_zm_der_door_buy_std_onepiece` (~96 tall). Previous 112 left a
+    # visible gap above the door (the clip brush blocked entry but the
+    # visible model didn't fill the opening).
     geometry.carve_room_with_openings(
         name,
         mins=(-512, -256, 0), maxs=(-128, 256, 256),
         openings=[
-            {"side": "east", "width": 80, "height": 112},
+            {"side": "east", "width": 80, "height": 96},
             {"side": "south", "width": 64, "height": 64, "bottom": 48},
             {"side": "north", "width": 64, "height": 64, "bottom": 48},
         ],
@@ -66,15 +70,15 @@ def make_demo_map(name: str, *, overwrite: bool = False) -> dict:
         name,
         mins=(-128, -512, 0), maxs=(768, 512, 384),
         openings=[
-            {"side": "west", "width": 80, "height": 112},
-            {"side": "east", "width": 80, "height": 112},
+            {"side": "west", "width": 80, "height": 96},
+            {"side": "east", "width": 80, "height": 96},
         ],
         wall_thickness=16,
     )
     geometry.carve_room_with_openings(
         name,
         mins=(768, -256, 0), maxs=(1280, 256, 256),
-        openings=[{"side": "west", "width": 80, "height": 112}],
+        openings=[{"side": "west", "width": 80, "height": 96}],
         wall_thickness=16,
     )
     summary["steps"].append({"rooms_carved": 3})
@@ -97,7 +101,15 @@ def make_demo_map(name: str, *, overwrite: bool = False) -> dict:
         mins=(-512, 256, 0), maxs=(-128, 432, 256),
         open_side="south",  # south side adjoins start_zone north wall
     )
-    summary["steps"].append({"courtyards_built": 2})
+    # Lights inside each courtyard so zombies + the view through the
+    # barricade boards aren't pitch black. Centered horizontally in each
+    # courtyard, near the ceiling (z=200) for a "lamp glow" feel. Slightly
+    # cooler color than the start_zone interior light to suggest "outside".
+    zm.add_light(name, origin=(-320, -344, 200),
+                 color=(0.85, 0.9, 1.0), radius=320, stops=4.0)
+    zm.add_light(name, origin=(-320, 344, 200),
+                 color=(0.85, 0.9, 1.0), radius=320, stops=4.0)
+    summary["steps"].append({"courtyards_built": 2, "courtyard_lights": 2})
 
     # 3. Register zones (auto-edits init_zones[] in the GSC + sets the
     # default_start_location for the starter zone).
@@ -120,16 +132,18 @@ def make_demo_map(name: str, *, overwrite: bool = False) -> dict:
     # Both doors are thin on X (16 units) — the doorway opens N-S along Y.
     # The default model orientation faces along X so the broad face shows
     # sideways. yaw=90 rotates to face along Y (correct for E-W doorways).
+    # Door brush height = 96 (z=16 floor surface → z=112 top), matching the
+    # 96-unit doorway opening and the visible Treyarch door model.
     zm.add_buyable_door(
         name,
-        door_mins=(-128, -40, 16), door_maxs=(-112, 40, 128),
+        door_mins=(-128, -40, 16), door_maxs=(-112, 40, 112),
         cost=500, script_flag="enter_arena",
         connects=("start_zone", "arena_zone"),
         door_model_yaw=90,
     )
     zm.add_buyable_door(
         name,
-        door_mins=(768, -40, 16), door_maxs=(784, 40, 128),
+        door_mins=(768, -40, 16), door_maxs=(784, 40, 112),
         cost=1500, script_flag="enter_vault",
         connects=("arena_zone", "vault_zone"),
         door_model_yaw=90,
