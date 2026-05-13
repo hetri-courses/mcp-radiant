@@ -714,6 +714,45 @@ def add_stairs(
 
 
 @mcp.tool()
+def add_outdoor_courtyard(
+    map_name: str,
+    mins: list[float],
+    maxs: list[float],
+    open_side: str,
+    wall_thickness: float = 16.0,
+    floor_texture: str = "t7_concrete_trowelled",
+    wall_texture: str = "t7_concrete_trowelled",
+    ceiling_texture: str = "t7_concrete_trowelled",
+) -> dict:
+    """Build a 5-walled exterior pocket adjacent to your playable area —
+    a small outdoor courtyard with floor, ceiling, and 3 perimeter walls
+    (the `open_side` is left out so the playable room's wall serves as
+    the courtyard's interior wall).
+
+    Use this when you've placed a barricade window in a room and need
+    walkable ground OUTSIDE that wall — without it, zombies spawn in the
+    void, take one step, and fall through (no navmesh). The courtyard
+    interior is also visible to players peeking through the barricade
+    boards, so it cleans up the "raw void/sky" look.
+
+    `open_side`: which side adjoins the playable area — "south", "north",
+    "east", or "west". E.g. if you're extending a courtyard SOUTH of the
+    playable area, the courtyard's NORTH side is shared with the playable
+    room's south wall — pass `open_side="north"`.
+
+    Typical sizing: courtyard depth (perpendicular to open_side) ≥ 144
+    so the spawn riser (at ~96 units out) fits with margin."""
+    return geometry.add_outdoor_courtyard(
+        map_name, _xyz(mins), _xyz(maxs),
+        open_side=open_side,  # type: ignore[arg-type]
+        wall_thickness=wall_thickness,
+        floor_texture=floor_texture,
+        wall_texture=wall_texture,
+        ceiling_texture=ceiling_texture,
+    )
+
+
+@mcp.tool()
 def seal_exterior(
     map_name: str,
     mins: list[float],

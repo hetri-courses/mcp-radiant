@@ -478,6 +478,103 @@ def add_stairs(
     }
 
 
+# --- Outdoor courtyard (exterior pocket beside playable area) -------------
+
+
+def add_outdoor_courtyard(
+    map_name: str,
+    mins: Point,
+    maxs: Point,
+    *,
+    open_side: Literal["south", "north", "east", "west"],
+    wall_thickness: float = 16.0,
+    floor_texture: str = brushes.DEFAULT_TEXTURE,
+    wall_texture: str = brushes.DEFAULT_TEXTURE,
+    ceiling_texture: str = brushes.DEFAULT_TEXTURE,
+) -> dict:
+    """Build a 5-walled exterior "pocket" adjacent to your playable area —
+    a small outdoor courtyard zombies can walk on while approaching barricade
+    windows. Without this, zombies spawn in the void, take one step, and fall
+    through the floor (no navmesh, no ground).
+
+    Pass `open_side` = the side that adjoins the playable area's wall
+    (so we DON'T add a wall there — the playable room's outer wall serves
+    as the courtyard's interior wall). Adds floor, ceiling, and 3 perimeter
+    walls.
+
+    Typical usage: place a barricade window in your room's wall, then add a
+    courtyard on the far side of that wall sized so the riser/spawn struct
+    sits inside it (~96 units out from the wall). Now zombies have a
+    navmesh-walkable area to traverse before hitting the barricade.
+
+    The courtyard interior is visible to the player through the barricade
+    boards — so its floor/wall textures matter visually. Use environmental
+    textures (concrete, gravel, brick) for a believable outdoor feel.
+
+    `mins`, `maxs` are the outermost bounds of the courtyard envelope
+    (matching the playable area's exterior on the shared axis if you want
+    continuous wall lines). Walls grow inward by `wall_thickness`."""
+    mins, maxs = brushes.normalize_box(mins, maxs)
+    x0, y0, z0 = mins
+    x1, y1, z1 = maxs
+    t = wall_thickness
+
+    if x1 - x0 <= 2 * t or y1 - y0 <= 2 * t or z1 - z0 <= 2 * t:
+        raise ValueError(
+            f"courtyard is smaller than 2 * wall_thickness ({2 * t}) on some axis"
+        )
+
+    # All wall specs. Each is (mins, maxs, side-name).
+    wall_specs: dict[str, tuple[Point, Point]] = {
+        "south": ((x0, y0, z0 + t), (x1, y0 + t, z1 - t)),
+        "north": ((x0, y1 - t, z0 + t), (x1, y1, z1 - t)),
+        "west":  ((x0, y0 + t, z0 + t), (x0 + t, y1 - t, z1 - t)),
+        "east":  ((x1 - t, y0 + t, z0 + t), (x1, y1 - t, z1 - t)),
+    }
+    if open_side not in wall_specs:
+        raise ValueError(f"open_side must be one of {list(wall_specs)}; got {open_side!r}")
+
+    # Per-face texturing: each wall caulks the outer face (touching void).
+    INTERIOR_FACE: dict[str, Side] = {
+        "south": "north", "north": "south", "west": "east", "east": "west",
+    }
+    def _faces_visible_inside(side: str, tex: str) -> dict[Side, str]:
+        sides_all: list[Side] = ["bottom", "top", "south", "north", "west", "east"]
+        return {s: ("caulk" if s != INTERIOR_FACE[side] else tex) for s in sides_all}
+
+    floor_faces = {s: ("caulk" if s != "top" else floor_texture)
+                   for s in ["bottom", "top", "south", "north", "west", "east"]}
+    ceil_faces = {s: ("caulk" if s != "bottom" else ceiling_texture)
+                  for s in ["bottom", "top", "south", "north", "west", "east"]}
+
+    brush_specs: list[tuple[Point, Point, dict[Side, str]]] = [
+        ((x0, y0, z0), (x1, y1, z0 + t), floor_faces),          # floor
+        ((x0, y0, z1 - t), (x1, y1, z1), ceil_faces),           # ceiling
+    ]
+    walls_added: list[str] = []
+    for side, (wm, wM) in wall_specs.items():
+        if side == open_side:
+            continue
+        brush_specs.append((wm, wM, _faces_visible_inside(side, wall_texture)))
+        walls_added.append(side)
+
+    mf, ws = _load_top(map_name)
+    for bm, bM, faces in brush_specs:
+        ws.brushes.append(brushes.box_brush(bm, bM, "caulk", face_textures=faces))
+    _save_top(mf, map_name)
+
+    return {
+        "outer_mins": mins,
+        "outer_maxs": maxs,
+        "open_side": open_side,
+        "walls_added": walls_added,
+        "interior_mins": (x0 + t, y0 + t, z0 + t),
+        "interior_maxs": (x1 - t, y1 - t, z1 - t),
+        "brushes_added": len(brush_specs),
+        "worldspawn_total_brushes": len(ws.brushes),
+    }
+
+
 # --- Map-wide exterior shell -----------------------------------------------
 
 

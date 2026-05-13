@@ -79,6 +79,26 @@ def make_demo_map(name: str, *, overwrite: bool = False) -> dict:
     )
     summary["steps"].append({"rooms_carved": 3})
 
+    # 2b. Outdoor courtyards on south + north sides of start_zone — where the
+    # barricade windows look out to. Without these, zombies rising outside the
+    # walls have no floor under them and fall through after one step. The
+    # courtyards also give the player a believable "outside" view through the
+    # boards instead of raw sky/void.
+    #   south courtyard: x=[-512..-128] (matching start_zone x), y=[-432..-256]
+    #     176 deep, riser at y=-336 sits 80 units inside (between south/north walls)
+    #   north courtyard: mirrored on north side
+    geometry.add_outdoor_courtyard(
+        name,
+        mins=(-512, -432, 0), maxs=(-128, -256, 256),
+        open_side="north",  # north side adjoins start_zone south wall
+    )
+    geometry.add_outdoor_courtyard(
+        name,
+        mins=(-512, 256, 0), maxs=(-128, 432, 256),
+        open_side="south",  # south side adjoins start_zone north wall
+    )
+    summary["steps"].append({"courtyards_built": 2})
+
     # 3. Register zones (auto-edits init_zones[] in the GSC + sets the
     # default_start_location for the starter zone).
     zm.add_zombie_zone(
