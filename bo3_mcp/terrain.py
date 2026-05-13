@@ -533,8 +533,9 @@ def start_terrain_diffusion_server(
     *,
     model: str = "xandergos/terrain-diffusion-30m",
     port: int = 8000,
-    device: str | None = None,
+    device: str | None = "privateuseone:0",
     repo_dir: str = "D:/projects/terrain-diffusion",
+    venv_dir: str | None = None,
     wait_for_ready: bool = True,
     ready_timeout: float = 300.0,
 ) -> dict:
@@ -543,14 +544,31 @@ def start_terrain_diffusion_server(
     First-run takes 1-3 minutes (model weights download from Hugging Face
     Hub + loading into VRAM). Subsequent runs are seconds.
 
+    **Runtime isolation**: this server runs in its OWN venv at
+    `<repo_dir>/.venv` (Python 3.10 + torch 2.4.1 + torch-directml +
+    diffusers etc.), NOT in the MCP's Python. This is because
+    `torch-directml` hard-pins `torch==2.4.1`, which has no Python 3.14
+    wheels, and the MCP itself targets newer Python. The MCP only talks
+    to the server over HTTP — no Python-version coupling.
+
     Args:
         model: HF model identifier. Choices the repo ships:
             - xandergos/terrain-diffusion-30m (recommended for games)
             - xandergos/terrain-diffusion-90m (realistic worldbuilding)
         port: where the Flask server binds.
-        device: "cuda" / "cpu" / None (auto). CPU works but is much
-            slower (minutes per region instead of seconds).
+        device: torch device string passed via --device AND
+            TERRAIN_DEVICE env var. Defaults to "privateuseone:0"
+            (DirectML on the first GPU — works on AMD/Intel/NVIDIA on
+            Windows). Pass "cuda" if you have NVIDIA + CUDA torch
+            installed instead, or "cpu" to force CPU. Pass None to let
+            terrain-diffusion's auto-select run (cuda if available else
+            cpu — note this WON'T pick DirectML, which is why the
+            default is explicit).
         repo_dir: filesystem path to the cloned terrain-diffusion repo.
+        venv_dir: filesystem path to the Python venv with inference
+            deps installed. Defaults to `<repo_dir>/.venv`. See
+            CLAUDE.md "Terrain-diffusion runtime" for the install
+            recipe.
         wait_for_ready: poll the server until it responds before returning.
         ready_timeout: seconds to wait for readiness.
 
@@ -561,20 +579,63 @@ def start_terrain_diffusion_server(
         raise FileNotFoundError(
             f"terrain-diffusion repo not found at {repo_dir!r}. "
             f"Clone it first:\n"
-            f"  git clone https://github.com/xandergos/terrain-diffusion {repo_dir}\n"
-            f"  cd {repo_dir} && pip install -r requirements.txt"
+            f"  git clone https://github.com/xandergos/terrain-diffusion {repo_dir}"
         )
 
-    # Call the inference api submodule directly to BYPASS the heavy
-    # `__main__.py` which imports training-only modules (rasterio,
-    # cartopy, earthengine-api, optuna, wandb...) at the top. Direct
-    # module path means we only need inference deps installed.
+    if venv_dir is None:
+        venv_dir = os.path.join(repo_dir, ".venv")
+    # Cross-platform venv python resolution
+    venv_python = os.path.join(venv_dir, "Scripts", "python.exe")
+    if not os.path.isfile(venv_python):
+        # POSIX fallback
+        alt = os.path.join(venv_dir, "bin", "python")
+        if os.path.isfile(alt):
+            venv_python = alt
+        else:
+            raise FileNotFoundError(
+                f"Venv python not found at {venv_python!r}. "
+                f"Create the venv first (see CLAUDE.md \"Terrain-diffusion "
+                f"runtime\" section) — roughly:\n"
+                f"  py -3.10 -m venv {venv_dir}\n"
+                f"  {venv_dir}/Scripts/python.exe -m pip install torch-directml \\\n"
+                f"      diffusers accelerate flask click h5py matplotlib \\\n"
+                f"      scikit-image scipy infinite-tensor safetensors \\\n"
+                f"      ema-pytorch tqdm pyyaml pyfastnoiselite numba \\\n"
+                f"      huggingface_hub rasterio"
+            )
+
+    # Run our launcher script (NOT `python -m terrain_diffusion.inference.api`)
+    # so we can pre-import torch_directml when DirectML is requested. Without
+    # that pre-import, `tensor.to("privateuseone:0")` raises
+    # `ModuleNotFoundError: No module named 'torch.privateuseone'`. The
+    # launcher also avoids the heavy `terrain_diffusion/__main__.py` which
+    # imports training-only modules (cartopy, earthengine-api, optuna,
+    # wandb) at top level.
+    launcher = os.path.join(
+        os.path.dirname(__file__), "_terrain_diffusion_launcher.py"
+    )
     cmd = [
-        sys.executable, "-m", "terrain_diffusion.inference.api", model,
+        venv_python, launcher, model,
         "--port", str(port),
     ]
     if device:
         cmd.extend(["--device", device])
+
+    # Belt-and-suspenders: also set TERRAIN_DEVICE env so even paths that
+    # don't honor --device pick up the device choice (api.py:_select_device
+    # checks the env var first).
+    env = os.environ.copy()
+    if device:
+        env["TERRAIN_DEVICE"] = device
+
+    # The terrain-diffusion package isn't pip-installed in the venv — it's
+    # just a clone. When we run our launcher script directly, sys.path[0]
+    # gets the launcher's directory (bo3_mcp/), not the terrain-diffusion
+    # repo. Add the repo to PYTHONPATH so `import terrain_diffusion` resolves.
+    existing_pp = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = (
+        repo_dir + (os.pathsep + existing_pp if existing_pp else "")
+    )
 
     proc = subprocess.Popen(
         cmd,
@@ -582,6 +643,7 @@ def start_terrain_diffusion_server(
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        env=env,
     )
 
     result = {
@@ -589,6 +651,8 @@ def start_terrain_diffusion_server(
         "server_url": f"http://localhost:{port}",
         "model": model,
         "repo_dir": repo_dir,
+        "venv_python": venv_python,
+        "device": device,
         "ready": False,
     }
 

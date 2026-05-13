@@ -15,9 +15,55 @@ claude mcp add --scope user bo3 -- python -m bo3_mcp.server   # register with Cl
 claude mcp list                                           # verify
 ```
 
-There are no tests, linters, or formatters configured. Single runtime dep is `mcp>=1.0.0`. Python 3.11+.
+There are no tests, linters, or formatters configured. The MCP itself has a single runtime dep (`mcp>=1.0.0`) and targets Python 3.11+. **The terrain-diffusion feature has its own isolated venv** — see "Terrain-diffusion runtime" below.
 
 `BO3_MOD_TOOLS` env var overrides the hardcoded install path (defaults to `D:\Steam\steamapps\common\Call of Duty Black Ops III 455130` — see [bo3_mcp/paths.py:9](bo3_mcp/paths.py:9)). Everything the server writes lives **outside** this repo, under `<MOD_TOOLS>/map_source/`, `<MOD_TOOLS>/share/raw/scripts/zm/`, and `<MOD_TOOLS>/usermaps/`.
+
+## Terrain-diffusion runtime
+
+The `generate_terrain_diffusion` tool path (real ML-driven terrain, not the value-noise placeholder in `generate_terrain`) calls out to a separate Flask REST server backed by [xandergos/terrain-diffusion](https://github.com/xandergos/terrain-diffusion). That server lives in its **own venv** at `D:\projects\terrain-diffusion\.venv` (Python 3.10 + torch 2.4.1 + torch-directml + diffusers) — separate from the MCP's Python 3.14 because `torch-directml` hard-pins `torch==2.4.1` which has no 3.14 wheels.
+
+Two MCP tools, two purposes:
+- `generate_terrain` → value-noise placeholder. **Not** terrain-diffusion. Useful baseline, no setup needed. The name is misleading; rename candidate `generate_terrain_noise`.
+- `generate_terrain_diffusion` → real model output via HTTP. Requires the venv + server + WorldClim climate data.
+
+**One-time setup** (≈3 GB on disk, half is torch):
+```powershell
+# 1. Clone the repo
+git clone https://github.com/xandergos/terrain-diffusion D:\projects\terrain-diffusion
+
+# 2. Build a Python 3.10 venv inside it
+py -3.10 -m venv D:\projects\terrain-diffusion\.venv
+
+# 3. Install torch-directml (pulls torch 2.4.1 + torchvision 0.19.1) + inference deps
+D:\projects\terrain-diffusion\.venv\Scripts\python.exe -m pip install `
+  torch-directml diffusers accelerate flask click h5py matplotlib `
+  scikit-image scipy infinite-tensor safetensors ema-pytorch tqdm `
+  pyyaml pyfastnoiselite numba huggingface_hub rasterio
+
+# 4. WorldClim climate data (the synthetic_map factory loads this — required at server boot)
+$dataDir = "D:\projects\terrain-diffusion\data\global"
+mkdir -Force $dataDir | Out-Null
+curl -L -o "$dataDir\wc2.1_10m_bio.zip" https://geodata.ucdavis.edu/climate/worldclim/2_1/base/wc2.1_10m_bio.zip
+Expand-Archive "$dataDir\wc2.1_10m_bio.zip" -DestinationPath $dataDir
+# etopo_10m.tif is already shipped with the repo's data/global/ dir
+```
+
+**GPU on AMD**: torch-directml gives DirectX 12-backed acceleration on AMD/Intel GPUs on Windows. After install, verify with:
+```powershell
+D:\projects\terrain-diffusion\.venv\Scripts\python.exe -c "import torch, torch_directml; print(torch_directml.device_name(0))"
+```
+
+**Local mods to terrain-diffusion** (necessary, not committed upstream — third-party repo):
+- `terrain_diffusion/models/mp_layers.py:resample` — when `x.device.type == 'privateuseone'`, substitute `F.interpolate(mode='nearest')` for `conv_transpose2d(ones-kernel, groups=c)`. DirectML doesn't implement depthwise transposed conv. The substitution is mathematically bit-equivalent because the original kernel is all-ones with stride == kernel_size (no overlap).
+
+**Launcher shim** ([bo3_mcp/_terrain_diffusion_launcher.py](bo3_mcp/_terrain_diffusion_launcher.py)): `torch_directml` registers its `privateuseone` backend **lazily**. If anything calls `.to('privateuseone:0')` before `import torch_directml`, you get `ModuleNotFoundError: No module named 'torch.privateuseone'`. The launcher pre-imports `torch_directml` when DirectML is requested, then hands off to `terrain_diffusion.inference.api.main()`. `start_terrain_diffusion_server` in [terrain.py](bo3_mcp/terrain.py) invokes the launcher with `PYTHONPATH=<repo_dir>` (the terrain-diffusion package isn't pip-installed, just cloned), `cwd=<repo_dir>`, and `TERRAIN_DEVICE` env var set.
+
+**Memory tuning**: 8 GB VRAM (RX 5700) won't fit the default `decoder_tile_size=512` at fp32 — gets ~128 MB allocation failures partway through the decoder. Use `--kwarg decoder_tile_size=128 --batch-size 1`. Reduce `decoder_tile_size` further for less VRAM; raise for more.
+
+**Endpoints**: only `/health` (readiness) and `/terrain` (data). The old API_README mentions `/seed` but the live code only exposes those two. `start_terrain_diffusion_server`'s readiness poll uses `/health`.
+
+**Known issue (model output)**: as of last test, the model emits all-NaN elevation regardless of device (CPU and DirectML both NaN, ruling out GPU as the cause). Likely numpy 2.x compat or model conditioning bug upstream — investigation pending. The DirectML *infrastructure* works (matmul, conv, etc.); only the end-to-end pipeline produces NaN.
 
 ## Dev loop: hot-reload, no restart
 
