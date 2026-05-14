@@ -450,7 +450,7 @@ def add_zombie_spawner(
     *,
     zone_name: str | None = None,
     count: int = 9999,
-    location_type: str = "spawn_location",
+    location_type: str = "riser_location",
     script_string: str | None = None,
 ) -> dict:
     """Place a zombie spawner — TWO entities:
@@ -476,10 +476,19 @@ def add_zombie_spawner(
     discover spawn points.
 
     `location_type` controls how the zombie appears (per `_zm_zonemgr.gsc:368`):
-      - `"spawn_location"` — walks in (default, basic zombie)
-      - `"riser_location"` — rises from the ground (zm_template_test pattern)
-      - `"faller_location"` — falls from above
-      - `"custom_spawner_entry"` — script-driven entry
+      - `"riser_location"` — **default**; zombies rise from the ground
+        with the canonical zm "claw-up" animation. Matches stock
+        `zm_template_test.map` interior risers, and avoids the
+        "blink-in" look that `spawn_location` produces. Use this for
+        any interior spawner you'd otherwise want to "just appear" —
+        risers work even without a barricade, as long as the origin is
+        on solid navmesh-covered ground.
+      - `"spawn_location"` — zombies walk/teleport in (no rise animation).
+        Was the old default; produces the "blink in standing" look the
+        user observed in ai_lab_02. Override to this only when you
+        specifically need walk-in behavior.
+      - `"faller_location"` — falls from above (rooftop drops, etc.).
+      - `"custom_spawner_entry"` — script-driven entry.
 
     `script_string` defaults to `"find_flesh"` (the standard pursue-player
     AI behavior). Override only when linking to a barricade prefab or a

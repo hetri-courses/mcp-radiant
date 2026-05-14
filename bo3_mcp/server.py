@@ -621,7 +621,7 @@ def add_zombie_spawner(
     angles: list[float] | None = None,
     zone_name: str | None = None,
     count: int = 9999,
-    location_type: str = "spawn_location",
+    location_type: str = "riser_location",
 ) -> dict:
     """Place a zombie spawner — emits an `actor_spawner_zm_factory_zombie`
     factory plus a sibling `script_struct` spawn-position tagged for the zone.
@@ -631,9 +631,12 @@ def add_zombie_spawner(
     framework discovers spawn points by `targetname "<zone>_spawners"`, not by
     spatial overlap. Match the zone you registered via `add_zombie_zone`.
 
-    `location_type`: `"spawn_location"` (basic walking, default),
-    `"riser_location"` (rises from ground), `"faller_location"` (falls from
-    above), `"custom_spawner_entry"` (script-driven).
+    `location_type`: `"riser_location"` (default — rises from ground with the
+    canonical claw-up animation; matches stock zm_template_test interior
+    risers and avoids the "blink-in standing" look from spawn_location),
+    `"spawn_location"` (walks in, no rise animation; old default),
+    `"faller_location"` (falls from above), `"custom_spawner_entry"`
+    (script-driven).
 
     `count=9999` is effectively unlimited; set lower for finite waves."""
     return zm.add_zombie_spawner(
