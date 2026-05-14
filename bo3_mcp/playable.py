@@ -332,6 +332,19 @@ def make_terrain_zombie_arena(
     spawner_z_offset: float = 4.0,
     include_perks: bool = True,
     include_wall_buys: bool = True,
+    # v22.14 terrain visual-quality knobs. Defaults chosen for a
+    # zombies-arena aesthetic: mostly-flat playable floor with ~25%
+    # terrain "patches" breaking through, capped under the doorway
+    # height so it doesn't block player passage, smoothed slightly,
+    # and feathered at room edges so terrain doesn't hard-wall the
+    # walls. Override any of these to get raw heightmap terrain.
+    terrain_style: str = "broken_floor",
+    broken_floor_coverage: float = 0.25,
+    max_height_units: float | None = 56.0,
+    edge_feather_units: float = 96.0,
+    smooth_iterations: int = 1,
+    auto_flatten_doorway_pads: bool = True,
+    extra_flatten_pads: list[dict] | None = None,
     terrain_server_url: str = "http://localhost:8000",
     overwrite: bool = False,
 ) -> dict[str, Any]:
@@ -433,6 +446,26 @@ def make_terrain_zombie_arena(
                               "player_spawn": (-320, 0, 32)})
 
     # ── 7. GENERATE TERRAIN inside arena bounds. Writes JSON sidecar.
+    # v22.14: heightmap is post-processed for arena-style visual quality:
+    #   - broken_floor mask: most cells stay flat, top ~25% rise as patches
+    #   - max_height clamp: peaks don't block the 96-unit doorways
+    #   - edge feather: terrain falls to floor near room walls
+    #   - smoothing: reduces stepwise voxel look
+    #   - auto-flatten pads at the west + east doorway positions so
+    #     the zombie can path through them (and the player can walk
+    #     out into vault).
+    pads: list[dict] = []
+    if auto_flatten_doorway_pads:
+        # Arena west doorway: x=-128 (interior wall), centered at y=0,
+        # opens to start_zone. Flatten a small pad just inside the wall.
+        pads.append({"center": [-96, 0], "radius": 64.0,
+                     "z": floor_thickness_units})
+        # Arena east doorway: x=768, centered at y=0, opens to vault.
+        pads.append({"center": [736, 0], "radius": 64.0,
+                     "z": floor_thickness_units})
+    if extra_flatten_pads:
+        pads.extend(extra_flatten_pads)
+
     terrain_result = terrain.generate_terrain_diffusion(
         map_name,
         region=terrain_region, scale=terrain_scale, seed=terrain_seed,
@@ -442,6 +475,12 @@ def make_terrain_zombie_arena(
         world_units_per_meter=world_units_per_meter,
         server_url=terrain_server_url,
         merge_strips=True, max_brushes=32768,
+        terrain_style=terrain_style,
+        broken_floor_coverage=broken_floor_coverage,
+        max_height_units=max_height_units,
+        edge_feather_units=edge_feather_units,
+        smooth_iterations=smooth_iterations,
+        flatten_pads=pads if pads else None,
     )
     summary["steps"].append({
         "terrain_brushes": terrain_result.get("brushes_added"),
@@ -534,6 +573,12 @@ def make_terrain_zombie_arena(
             "brushes_added": terrain_result.get("brushes_added"),
             "elev_range_m": terrain_result["model_meta"].get("elev_range_m"),
             "sidecar_path": terrain_result.get("terrain_sidecar"),
+            "style": terrain_style,
+            "preprocessing": terrain_result["model_meta"].get("preprocessing_applied", {}),
+            "max_height_units": max_height_units,
+            "edge_feather_units": edge_feather_units,
+            "smooth_iterations": smooth_iterations,
+            "broken_floor_coverage": broken_floor_coverage if terrain_style == "broken_floor" else None,
             "spawner_placements": arena_spawners["placed"],
             "perk_placements": perks_result["placed"] if perks_result else [],
         },

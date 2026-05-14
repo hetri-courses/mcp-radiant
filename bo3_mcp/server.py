@@ -235,6 +235,15 @@ def make_terrain_zombie_arena(
     terrain_cell_size: float | None = None,
     spawner_offsets: list[list[float]] | None = None,
     spawner_z_offset: float | None = None,
+    include_perks: bool | None = None,
+    include_wall_buys: bool | None = None,
+    terrain_style: str | None = None,
+    broken_floor_coverage: float | None = None,
+    max_height_units: float | None = None,
+    edge_feather_units: float | None = None,
+    smooth_iterations: int | None = None,
+    auto_flatten_doorway_pads: bool | None = None,
+    extra_flatten_pads: list[dict] | None = None,
     terrain_server_url: str | None = None,
     overwrite: bool = False,
 ) -> dict:
@@ -284,6 +293,24 @@ def make_terrain_zombie_arena(
         kwargs["spawner_offsets"] = tuple(tuple(o) for o in spawner_offsets)
     if spawner_z_offset is not None:
         kwargs["spawner_z_offset"] = spawner_z_offset
+    if include_perks is not None:
+        kwargs["include_perks"] = include_perks
+    if include_wall_buys is not None:
+        kwargs["include_wall_buys"] = include_wall_buys
+    if terrain_style is not None:
+        kwargs["terrain_style"] = terrain_style
+    if broken_floor_coverage is not None:
+        kwargs["broken_floor_coverage"] = broken_floor_coverage
+    if max_height_units is not None:
+        kwargs["max_height_units"] = max_height_units
+    if edge_feather_units is not None:
+        kwargs["edge_feather_units"] = edge_feather_units
+    if smooth_iterations is not None:
+        kwargs["smooth_iterations"] = smooth_iterations
+    if auto_flatten_doorway_pads is not None:
+        kwargs["auto_flatten_doorway_pads"] = auto_flatten_doorway_pads
+    if extra_flatten_pads is not None:
+        kwargs["extra_flatten_pads"] = extra_flatten_pads
     if terrain_server_url is not None:
         kwargs["terrain_server_url"] = terrain_server_url
     return playable.make_terrain_zombie_arena(map_name, **kwargs)

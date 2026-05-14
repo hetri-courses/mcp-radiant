@@ -648,6 +648,14 @@ def generate_terrain_diffusion(
     merge_strips: bool = True,
     max_brushes: int = 32768,
     allow_constant: bool = False,
+    # v22.14 terrain visual-quality knobs. All optional — when off, the
+    # function behaves like v22.13 (raw voxel terrain filling the region).
+    terrain_style: str = "full_voxel",
+    broken_floor_coverage: float = 0.25,
+    max_height_units: float | None = None,
+    edge_feather_units: float = 0.0,
+    smooth_iterations: int = 0,
+    flatten_pads: list[dict] | None = None,
 ) -> dict:
     """Generate BO3 terrain using xandergos/terrain-diffusion as the heightmap
     source. Hits the REST API, converts meters → BO3 inches, places brushes.
@@ -725,6 +733,125 @@ def generate_terrain_diffusion(
             scaled_row.append(max(0.0, world_z))
         scaled.append(scaled_row)
 
+    rows = len(scaled)
+    cols = len(scaled[0]) if rows else 0
+    preprocessing_applied: dict[str, Any] = {}
+
+    # ── HEIGHTMAP POSTPROCESSING (v22.14): all knobs operate on the
+    # scaled BO3-unit heightmap. They run in order: broken_floor mask →
+    # max_height clamp → smoothing → edge feathering → flatten_pads.
+    # Each is no-op when its parameter is left at the default.
+
+    # 1) broken_floor: collapse cells below the (1-coverage) percentile to
+    # floor_thickness_units (flat). Only the top `coverage` fraction of
+    # cells stay raised, producing "patches" of terrain breaking through
+    # an otherwise-flat floor. Aesthetic = tiled floor with dirt/rock
+    # bumps, not a raw heightmap mountain.
+    if terrain_style == "broken_floor" and rows > 0:
+        flat_floor_z = floor_thickness_units
+        all_h = sorted(v for row in scaled for v in row)
+        if all_h:
+            threshold_idx = int(max(0.0, min(1.0, 1.0 - broken_floor_coverage)) * len(all_h))
+            threshold_idx = min(threshold_idx, len(all_h) - 1)
+            threshold = all_h[threshold_idx]
+            raised_cells = 0
+            for y in range(rows):
+                for x in range(cols):
+                    if scaled[y][x] < threshold:
+                        scaled[y][x] = flat_floor_z
+                    else:
+                        raised_cells += 1
+            preprocessing_applied["broken_floor"] = {
+                "coverage_target": broken_floor_coverage,
+                "threshold_z": float(threshold),
+                "raised_cells": raised_cells,
+                "total_cells": rows * cols,
+                "flat_floor_z": float(flat_floor_z),
+            }
+
+    # 2) max_height_units: clamp every cell to at most this height. Use
+    # to prevent terrain peaks from blocking doorway openings. E.g., if
+    # a doorway is z=[16..112] (96 tall), max_height_units=64 keeps
+    # terrain peaks well below the doorway top.
+    if max_height_units is not None:
+        clamped = 0
+        for y in range(rows):
+            for x in range(cols):
+                if scaled[y][x] > max_height_units:
+                    scaled[y][x] = float(max_height_units)
+                    clamped += 1
+        preprocessing_applied["max_height_clamp"] = {
+            "max_height_units": float(max_height_units),
+            "cells_clamped": clamped,
+        }
+
+    # 3) smooth_iterations: simple box-blur passes that reduce
+    # cell-to-cell variation. Each pass replaces each cell with the
+    # average of itself + 4-connected neighbors. Reduces voxel
+    # stair-step appearance without changing overall relief much.
+    if smooth_iterations > 0 and rows >= 3 and cols >= 3:
+        for _ in range(smooth_iterations):
+            new_grid = [row[:] for row in scaled]
+            for y in range(1, rows - 1):
+                for x in range(1, cols - 1):
+                    new_grid[y][x] = (
+                        scaled[y][x] + scaled[y - 1][x] + scaled[y + 1][x]
+                        + scaled[y][x - 1] + scaled[y][x + 1]
+                    ) / 5.0
+            scaled = new_grid
+        preprocessing_applied["smoothing"] = {"iterations": smooth_iterations}
+
+    # 4) edge_feather_units: terrain heights linearly fall to floor_
+    # thickness_units near the terrain footprint boundary. Prevents
+    # hard cliff walls at the room's edges/walls. The interpolation
+    # factor at cell (x, y) is min(1, dist_to_boundary / feather_cells),
+    # where dist is in cells.
+    if edge_feather_units > 0 and rows >= 3 and cols >= 3:
+        feather_cells = max(1, int(round(edge_feather_units / max(cell_size, 1.0))))
+        flat_floor_z = floor_thickness_units
+        for y in range(rows):
+            for x in range(cols):
+                dist = min(x, y, cols - 1 - x, rows - 1 - y)
+                if dist < feather_cells:
+                    t = dist / feather_cells  # 0 at boundary, 1 at feather depth
+                    scaled[y][x] = flat_floor_z + (scaled[y][x] - flat_floor_z) * t
+        preprocessing_applied["edge_feather"] = {
+            "feather_cells": feather_cells,
+            "feather_units": float(edge_feather_units),
+        }
+
+    # 5) flatten_pads: list of {"center": [x, y], "radius": r, "z": target_z}.
+    # Each pad forces cells inside the radius to the given z (or
+    # floor_thickness_units if z omitted). Use to flatten ground under
+    # spawners, perks, doorways, etc. The flattening overrides whatever
+    # the earlier passes produced — useful as a "guaranteed walkable
+    # zone" override.
+    if flatten_pads:
+        ox, oy, _oz = origin
+        pads_applied = []
+        for pad in flatten_pads:
+            cx = float(pad["center"][0])
+            cy = float(pad["center"][1])
+            radius = float(pad.get("radius", 64.0))
+            target_z = float(pad.get("z", floor_thickness_units))
+            cells_flattened = 0
+            radius_sq = radius * radius
+            for y in range(rows):
+                wy = oy + (y + 0.5) * cell_size
+                for x in range(cols):
+                    wx = ox + (x + 0.5) * cell_size
+                    d2 = (wx - cx) ** 2 + (wy - cy) ** 2
+                    if d2 <= radius_sq:
+                        scaled[y][x] = target_z
+                        cells_flattened += 1
+            pads_applied.append({
+                "center": [cx, cy],
+                "radius": radius,
+                "target_z": target_z,
+                "cells_flattened": cells_flattened,
+            })
+        preprocessing_applied["flatten_pads"] = pads_applied
+
     # Post-scale guard: error early if we'd emit 0 brushes.
     nonzero_cells = sum(1 for r in scaled for v in r if v > 0)
     if nonzero_cells == 0:
@@ -773,6 +900,8 @@ def generate_terrain_diffusion(
         "normalize_elevation": normalize_elevation,
         "floor_thickness_units": floor_thickness_units,
         "world_units_per_meter": world_units_per_meter,
+        "terrain_style": terrain_style,
+        "preprocessing_applied": preprocessing_applied,
     }
 
     # JSON sidecar — persist the SCALED heightmap (in BO3 z-units) and
