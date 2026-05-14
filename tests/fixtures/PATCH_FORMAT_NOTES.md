@@ -225,6 +225,16 @@ When emitting a patch by hand via `mesh_block`, build your
 If a patch is invisible from above but visible from below, the axis
 order is wrong.
 
+**v23.2 runtime VERIFIED (zm_patch_lab_03 playtest):**
+- Slopes render correctly from above with their declared materials
+- Player walks up `weaponClip detail` slopes smoothly
+- `contents=None` slopes have no collision (player walks through)
+- The umbra/sky-cull bug from on-top-of-patch in v23.1 also resolved
+  (the back-facing normals were polluting the visibility cluster)
+- Patches are 1-sided: underside is open. For a "solid"-looking ramp
+  you'd need box brushes underneath. For TD terrain on flat ground,
+  the underlying floor brush hides the gap.
+
 ## Voxel terrain reference (for fallback mode)
 
 `zm_terrain_test.map` is Treyarch's "terrain test" — and it's pure
