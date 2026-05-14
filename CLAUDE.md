@@ -127,7 +127,8 @@ textures.py     vetted material catalog (extracted from real zm_giant brush face
 entities.py     generic entity CRUD on a MapFile (GUID-keyed)
 gsc.py          GSC line edits: #using auto-management, init_zones[N] append, default_start_location
 geometry.py     rooms / walls / slabs / stairs / doorways / courtyards / exterior seal
-terrain.py      heightmap → voxelized box-brush terrain (+ optional terrain-diffusion API client)
+terrain.py      heightmap → terrain brushes (voxel boxes OR patch meshes via patches.py)
+patches.py      `mesh` / `curve` patch-primitive synthesis (smooth terrain; nested inside brush blocks)
 zm.py           zombie-mode recipes: perks/box/pap/wall buys/spawners/zones/doors/barricades + catalogs
 scaffold.py     create_zombie_map + GSC/CSC/.map/.zone templates
 pipeline.py     subprocess wrappers for gdtdb / cod2map64 / radiant_modtools / linker_modtools + output parsing
@@ -154,6 +155,25 @@ When mutating something, the **right file to load** depends on the entity type �
 | `add_perk` / `add_pack_a_punch` / `add_zombie_zone` / `add_buyable_door(connects=...)` | **also edits the `.gsc`** (auto-manages `#using` imports, appends `init_zones[N]`, updates `default_start_location`, inserts `add_adjacent_zone`) |
 
 The path helpers in [paths.py](bo3_mcp/paths.py) (`map_source`, `map_prefab_dir`, `core_prefab`, `gsc`, `csc`, `zone_manifest`) are the single source of truth for where things live — use them rather than building paths by hand.
+
+### Terrain rendering: patches over voxel (v23)
+
+**Primary terrain renderer is `mesh` patch primitives**, not voxel box columns. v22 used voxel terrain (one box brush per heightmap cell); the result was visually blocky and broke zombie pathing whenever adjacent cells had height steps too large to traverse. v22.14 added preprocessing knobs (`broken_floor`, `max_height_units`, `edge_feather_units`) but those only hide the representation problem — the geometry was still voxel columns.
+
+**v23 emits patch meshes**, matching how Treyarch ships outdoor terrain in `_prefabs/mp/mp_sector/geo/mp_sector_terrain_north_tunnel_rocks.map`:
+
+- Patches are `mesh` blocks **inside** the regular `// brush N { ... }` containers — `mapfile.py` round-trips them as opaque text (with the v23 fix to `_consume_brush` for nested braces).
+- One visual mesh per chunk + a duplicate **collision mesh** with `contents weaponClip detail ai_nosight;` produces a walkable, bullet-stopping, AI-pathable surface. This is the canonical pattern (`patches.mesh_terrain_pair`).
+- cod2map64 prints `building curve/terrain collision...` when it processes a patch — that's the marker that the format was accepted.
+- **Format details** + extracted stock examples live in `tests/fixtures/PATCH_FORMAT_NOTES.md` and the four `*.mapfrag` files alongside it. **Do not re-derive the format** — read those notes.
+
+**`patches.py` API:**
+- `mesh_block(control_points, *, texture, contents=None, ...)` — single mesh primitive. `contents=None` is visual; set to `"weaponClip detail ai_nosight"` for the collision twin.
+- `mesh_terrain_pair(control_points, *, visual_texture, collision_texture)` — emits both at once.
+- `heightmap_to_mesh_patches(heightmap, *, origin, cell_size, chunk_size=8, ...)` — chunks a heightmap into 9×9-CP meshes with shared edges (no seams), returns a list of brush bodies. Append all to your worldspawn.
+- `curve_block(...)` — Bezier-smoothed variant. Use for decorative arches/ramps, NOT terrain.
+
+**Voxel terrain (`heightmap_to_brushes`) remains as a fallback** for the "rocky mesa" aesthetic (stock `zm_terrain_test.map` does this), but is **not** the default for new terrain. Don't try to solve blockiness with `broken_floor_coverage` / `max_height_units` / `smooth_iterations` tweaks — those are postprocessing knobs, not the renderer. Switch to `terrain_render_mode="patch_mesh"` instead.
 
 ### Brush winding convention
 

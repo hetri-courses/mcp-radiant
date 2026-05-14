@@ -1,0 +1,48 @@
+// From _prefabs/zm/zm_giant/geo/zone_b/zoneb_glass_roof_arch_01.map, brush 0.
+// CURVE primitive (Bezier-smoothed) — for comparison with mesh.
+// 5x3 control points. T1=16 (subdivision count, higher = smoother).
+//
+// curve vs mesh:
+//   curve = Bezier interpolation between control points; the engine
+//           subdivides each span by T1 (here 16) for smooth visual
+//   mesh  = flat triangulation; control points connect linearly
+//
+// For terrain heightmaps, BOTH work but mesh is simpler and faster.
+// mp_sector rock terrain uses mesh. Decorative arches use curve.
+// brush 0
+ {
+  guid "{49D2D529-FF6E-47D2-92AC-8D4EEE9A7E71}"
+  curve
+  {
+  contents weaponClip detail;
+  toolFlags;
+   t7_metal_trim_rivets_02
+   lightmap_gray
+   5 3 16 6
+   (
+	v 368 8 0 t 0 -0 1 1
+	v 368 0 0 t 0 -512 1 5
+	v 368 -8 0 t 0 -1024 1 5
+   )
+   (
+	v 242 8 174 t 2048 -0 33 1
+	v 242 0 174 t 2048 -512 33 5
+	v 242 -8 174 t 2048 -1024 33 5
+   )
+   (
+	v 0 8 176 t 4096 -0 65 1
+	v 0 0 176 t 4096 -512 65 5
+	v 0 -8 176 t 4096 -1024 65 5
+   )
+   (
+	v -242 8 174 t 6144 -0 97 1
+	v -242 0 174 t 6144 -512 97 5
+	v -242 -8 174 t 6144 -1024 97 5
+   )
+   (
+	v -368 8 0 t 8192 -0 129 1
+	v -368 0 0 t 8192 -512 129 5
+	v -368 -8 0 t 8192 -1024 129 5
+   )
+  }
+ }

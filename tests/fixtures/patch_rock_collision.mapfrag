@@ -1,0 +1,60 @@
+// From mp_sector_terrain_north_tunnel_rocks.map, brush 1 — the COLLISION
+// twin of the visual mesh in patch_rock_visual.mapfrag.
+//
+// Key differences from the visual mesh:
+//   - `contents weaponClip detail ai_nosight;` line is present.
+//       weaponClip = bullets stop on it
+//       detail     = doesn't contribute to BSP cuts
+//       ai_nosight = AI cannot see THROUGH it (so zombies path to
+//                    the player, not around the rock)
+//   - Different render material (a "blend" variant for terrain blending)
+//   - Optional per-vertex color `c R G B A` on some control points
+//     (used for blend weights)
+//   - Optional `decalLayerSort` / `decalEditorSort` for decal sorting
+//
+// Control point COORDINATES are identical to the visual mesh — both
+// must occupy the exact same volume.
+// brush 1
+ {
+  guid "{66DCF0DA-3AD6-11E4-85C1-2C27D7F024B0}"
+  mesh
+  {
+  contents weaponClip detail ai_nosight;
+  toolFlags;
+   t7_rock_sand_crumbled_large_golden_blend
+   lightmap_gray
+   5 4 0 8
+   (
+	v -747 2483 368 t -5277.4429 -20046.738 30 44.727421
+	v -684 2515 389 t -5533.4429 -20974.738 30 45.494453
+	v -769 2628 417 t -6152 -21568 30 46.26149
+	v -780 2765 458 t -6240 -22664 30 47.795563
+   )
+   (
+	v -631 2475 368 t -5109.4429 -20198.738 30.5 44.727421
+	v -599 2628.5 404 t -4812.4805 -21658.01 30.5 45.494453
+	v -705 2772 450 t -5640 -22720 30.5 46.26149
+	v -598 2814 457 t -4784 -23056 30.5 47.795563
+   )
+   (
+	v -551 2457 329 c 255 255 255 160 t -4408 -20200 31 44.727421
+	v -596 2764 449 t -4768 -22656 31 45.494453
+	v -596 2772 449 t -4768 -22720 31 46.26149
+	v -564 2814 447 t -4512 -23056 31 47.795563
+   )
+   (
+	v -521.5 2588 338.5 t -4172 -21248 32 44.727421
+	v -575.5 2759 396.5 t -4604 -22616 32 45.494453
+	v -527.5 2789.5 391.5 t -4220 -22860 32 46.26149
+	v -593.5 2844.5 385.5 t -4748 -23300 32 47.795563
+   )
+   (
+	v -492 2653 327 t -3936 -22296 33 44.727421
+	v -555 2754 344 t -4440 -22576 33 45.494453
+	v -459 2807 334 c 255 255 255 140 t -3672 -23000 33 46.26149
+	v -623 2875 324 t -4984 -23544 33 47.795563
+   )
+   decalLayerSort "Sand"
+   decalEditorSort -1
+  }
+ }

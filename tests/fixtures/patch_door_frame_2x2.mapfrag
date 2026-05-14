@@ -1,0 +1,26 @@
+// From _prefabs/zm/zm_giant/geo/door_frame_metal_rusted.map, brush 0.
+// SMALLEST possible mesh — 2x2 control points (4 total) = a single quad
+// with NO curvature. Effectively a non-axis-aligned quad face.
+//
+// Useful as the lower bound for emitter validation: if a 2x2 mesh fails
+// to compile, the format is wrong somewhere.
+// brush 0
+ {
+  guid "{6BE94F3A-60BE-11E5-94BD-645106422D48}"
+  mesh
+  {
+  contents weaponClip detail umbraTarget;
+  toolFlags;
+   t7_metal_rust_ceiling_01
+   lightmap_gray
+   2 2 0 8
+   (
+	v -786.5 -269 131.5 t -12584 -2104 -49.15625 11.210938
+	v -786.5 -269 29 t -12584 -464 -25.601563 -1.8125
+   )
+   (
+	v -787.5 -269 132.5 t -12600 -2120 -49.21875 -1.8046875
+	v -787.5 -269 29 t -12600 -464 -41.367188 -1.8125
+   )
+  }
+ }

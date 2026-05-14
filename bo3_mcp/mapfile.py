@@ -163,7 +163,12 @@ def _parse_kvp(line: str) -> tuple[str, str]:
 
 def _consume_brush(lines: list[str], start: int) -> tuple[str, int]:
     """Capture a brush block as opaque text, including its `// brush N` header
-    line and braces. Returns (text, next_index_after_close)."""
+    line and braces. Returns (text, next_index_after_close).
+
+    Tracks brace depth so nested blocks (mesh/curve patches, which open
+    their own inner `{...}` after the `mesh`/`curve` keyword) round-trip
+    correctly. A plain 6-face brush has depth 1→0 on a single `}`; a
+    mesh brush has 1→2→1→0 on inner-open/inner-close/outer-close."""
     out = [lines[start]]  # `// brush N`
     i = start + 1
     while i < len(lines) and lines[i].strip() == "":
@@ -173,11 +178,18 @@ def _consume_brush(lines: list[str], start: int) -> tuple[str, int]:
         raise ValueError(f"expected '{{' after brush header near line {start + 1}")
     out.append(lines[i])
     i += 1
+    depth = 1  # we're inside the outer brace
     while i < len(lines):
-        out.append(lines[i])
-        if lines[i].strip() == "}":
-            i += 1
-            return "".join(out), i
+        line = lines[i]
+        out.append(line)
+        stripped = line.strip()
+        if stripped == "{":
+            depth += 1
+        elif stripped == "}":
+            depth -= 1
+            if depth == 0:
+                i += 1
+                return "".join(out), i
         i += 1
     raise ValueError(f"unterminated brush block starting at line {start + 1}")
 
