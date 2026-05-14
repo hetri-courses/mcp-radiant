@@ -1485,3 +1485,181 @@ def furnish_zone(
         summary["placed"]["lights"] = len(light_origins)
 
     return summary
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# add_barricaded_starter_room — composition helper extracting the
+# v22.10 verified-working zombie starter pattern (room + 2 courtyards +
+# 2 barricade windows + risers + interior light + zone volume).
+# REUSABLE from any recipe; not coupled to demo-v3 coords.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def add_barricaded_starter_room(
+    map_name: str,
+    *,
+    mins: tuple[float, float, float],
+    maxs: tuple[float, float, float],
+    zone_name: str = "start_zone",
+    is_starting_zone: bool = True,
+    courtyard_depth: float = 176.0,
+    wall_thickness: float = 16.0,
+    window_width: float = 64.0,
+    window_height: float = 48.0,
+    window_bottom: float = 48.0,
+    extra_openings: list[dict] | None = None,
+    interior_light_color: tuple[float, float, float] = (1.0, 0.95, 0.85),
+    interior_light_radius: float = 320.0,
+    interior_light_stops: float = 4.0,
+    courtyard_light_color: tuple[float, float, float] = (0.85, 0.9, 1.0),
+    courtyard_light_radius: float = 320.0,
+    courtyard_light_stops: float = 4.0,
+    skip_zone_registration: bool = False,
+) -> dict:
+    """The v22.10 verified-working zombie starter recipe — composed as
+    REUSABLE building blocks.
+
+    Builds the canonical starter pattern: rectangular room with 2 barricade
+    windows on the south + north walls, outdoor courtyards on each side
+    (where the exterior riser spawn structs stand), barricade prefabs in
+    the window openings, riser script_structs with script_string="window_
+    <zone>_<x>_<y>" linking them to their barricades, and one interior
+    point light + one courtyard light per side.
+
+    Output is a fully-functional zombie-spawning room compatible with the
+    BO3 ZM framework: zombies rise in the courtyards → walk to the
+    barricade windows → vault through → enter the room → run find_flesh
+    AI (registered automatically by the script_string linkage).
+
+    Use this from ANY recipe (the demo foundation, terrain arena, custom
+    layouts, multi-zone maps). Not coupled to demo-v3 dimensions — pass
+    whatever `mins`/`maxs` you want.
+
+    Args:
+      map_name: target map.
+      mins, maxs: outer extents of the room (NOT the interior void).
+        The room's interior void is mins+wall_thickness to maxs-wall_thickness.
+      zone_name: zone targetname. '_zone' suffix added if missing.
+      is_starting_zone: passed to add_zombie_zone; True sets this as the
+        default_start_location in the GSC.
+      courtyard_depth: how far each outdoor courtyard extends OUTSIDE the
+        south/north wall. Default 176 matches demo v3.
+      wall_thickness: room wall thickness. Default 16.
+      window_width / window_height / window_bottom: barricade window
+        dimensions in BO3 units. Defaults match the v22.10 verified
+        values (64 wide × 48 tall, bottom at z=48 above floor surface).
+        Don't shrink window_height much further — the barricade prefab's
+        boards span ~z=47..110 absolute and need at least that much
+        opening to look right.
+      extra_openings: additional carve_room_with_openings opening dicts
+        appended to the south/north windows. Use to add e.g. an east
+        doorway connecting to an arena.
+      interior_light_*: warm-white point light in the room center.
+      courtyard_light_*: cool-blue accent lights in each courtyard (so
+        zombies are visible through the barricade boards).
+      skip_zone_registration: if True, you'll register the zone yourself
+        (e.g., the parent recipe handles add_zombie_zone). Default False.
+
+    Returns: dict with the carved-room result, courtyards, barricade
+    GUIDs, and the zone registration (if not skipped).
+    """
+    # Compose the openings list (windows on south + north, plus any extras).
+    openings: list[dict] = [
+        {"side": "south", "width": window_width, "height": window_height,
+         "bottom": window_bottom},
+        {"side": "north", "width": window_width, "height": window_height,
+         "bottom": window_bottom},
+    ]
+    if extra_openings:
+        openings.extend(extra_openings)
+
+    # Carve the room
+    room = geometry.carve_room_with_openings(
+        map_name, mins=mins, maxs=maxs, openings=openings,
+        wall_thickness=wall_thickness,
+    )
+
+    x0, y0, z0 = mins
+    x1, y1, z1 = maxs
+    cx = (x0 + x1) / 2  # room center x
+    interior_z_top = z1 - wall_thickness
+
+    # Outdoor courtyards: south extends -Y, north extends +Y.
+    south_court = geometry.add_outdoor_courtyard(
+        map_name,
+        mins=(x0, y0 - courtyard_depth, z0),
+        maxs=(x1, y0, z1),
+        open_side="north",  # courtyard's NORTH face adjoins the room's south wall
+    )
+    north_court = geometry.add_outdoor_courtyard(
+        map_name,
+        mins=(x0, y1, z0),
+        maxs=(x1, y1 + courtyard_depth, z1),
+        open_side="south",
+    )
+
+    # Courtyard accent lights (cool tone so zombies in courtyards look
+    # different from interior).
+    courtyard_lights: list[str] = []
+    for cy in (y0 - courtyard_depth / 2, y1 + courtyard_depth / 2):
+        light = add_light(
+            map_name,
+            origin=(cx, cy, z0 + (interior_z_top - z0) * 0.78),
+            color=courtyard_light_color,
+            radius=courtyard_light_radius,
+            stops=courtyard_light_stops,
+        )
+        courtyard_lights.append(light["guid"])
+
+    # Zone registration — interior void only (the playable area, not
+    # courtyards). Skip if the caller wants to add other openings
+    # (e.g., doorways) and register manually with custom volume.
+    zone_info: dict | None = None
+    if not skip_zone_registration:
+        # Interior void: mins+thickness to maxs-thickness
+        vx0 = x0 + wall_thickness
+        vy0 = y0 + wall_thickness
+        vz0 = z0 + wall_thickness
+        vx1 = x1 - wall_thickness
+        vy1 = y1 - wall_thickness
+        vz1 = z1 - wall_thickness
+        zone_info = add_zombie_zone(
+            map_name, zone_name,
+            volume_center=((vx0 + vx1) / 2, (vy0 + vy1) / 2, (vz0 + vz1) / 2),
+            volume_size=(vx1 - vx0, vy1 - vy0, vz1 - vz0),
+            is_starting_zone=is_starting_zone,
+        )
+
+    # Resolve canonical zone name (with _zone suffix) for barricade linking.
+    canonical_zone = zone_name if zone_name.endswith("_zone") else f"{zone_name}_zone"
+
+    # Interior point light in the room center.
+    interior_light = add_light(
+        map_name,
+        origin=(cx, (y0 + y1) / 2, z0 + (interior_z_top - z0) * 0.78),
+        color=interior_light_color,
+        radius=interior_light_radius,
+        stops=interior_light_stops,
+    )
+
+    # Barricade windows. Place them on the OUTER face of each wall, at
+    # the floor surface (z = z0 + wall_thickness).
+    floor_surface_z = z0 + wall_thickness
+    south_window = add_zombie_window(
+        map_name, origin=(cx, y0, floor_surface_z), yaw=180,
+        zone_name=canonical_zone,
+    )
+    north_window = add_zombie_window(
+        map_name, origin=(cx, y1, floor_surface_z), yaw=0,
+        zone_name=canonical_zone,
+    )
+
+    return {
+        "room": room,
+        "courtyards": {"south": south_court, "north": north_court},
+        "zone": zone_info,
+        "interior_light_guid": interior_light["guid"],
+        "courtyard_light_guids": courtyard_lights,
+        "barricade_windows": [south_window, north_window],
+        "canonical_zone": canonical_zone,
+    }

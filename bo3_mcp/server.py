@@ -4,6 +4,7 @@ Code (or any MCP client) can drive map authoring and builds."""
 from __future__ import annotations
 
 import importlib
+from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
@@ -224,17 +225,17 @@ def terrain_height_at_xy(map_name: str, x: float, y: float) -> dict:
 @mcp.tool()
 def make_terrain_zombie_arena(
     map_name: str,
-    terrain_seed: int = 42,
+    terrain_seed: int | None = None,
     terrain_region: list[int] | None = None,
-    terrain_scale: int = 1,
-    world_units_per_meter: float = 0.3,
-    floor_thickness_units: float = 16.0,
-    normalize_elevation: bool = True,
+    terrain_scale: int | None = None,
+    world_units_per_meter: float | None = None,
+    floor_thickness_units: float | None = None,
+    normalize_elevation: bool | None = None,
     terrain_origin: list[float] | None = None,
-    terrain_cell_size: float = 64.0,
+    terrain_cell_size: float | None = None,
     spawner_offsets: list[list[float]] | None = None,
-    spawner_z_offset: float = 4.0,
-    terrain_server_url: str = "http://localhost:8000",
+    spawner_z_offset: float | None = None,
+    terrain_server_url: str | None = None,
     overwrite: bool = False,
 ) -> dict:
     """**Diffusion terrain inside a playable BO3 zombie map.**
@@ -257,26 +258,34 @@ def make_terrain_zombie_arena(
     Defaults are conservative (small 16x16 region, gentle wupm=0.3) to
     keep navmesh connected. Scale up once you've confirmed the shape works.
     """
-    # Pass explicit overrides only when provided. Otherwise let
-    # playable.make_terrain_zombie_arena use its own defaults (the source
-    # of truth — don't duplicate them here).
-    kwargs: dict = {
-        "terrain_seed": terrain_seed,
-        "terrain_scale": terrain_scale,
-        "world_units_per_meter": world_units_per_meter,
-        "floor_thickness_units": floor_thickness_units,
-        "normalize_elevation": normalize_elevation,
-        "terrain_cell_size": terrain_cell_size,
-        "spawner_z_offset": spawner_z_offset,
-        "terrain_server_url": terrain_server_url,
-        "overwrite": overwrite,
-    }
+    # Pass ONLY explicit overrides — every param defaults to None at the
+    # wrapper layer, so playable.make_terrain_zombie_arena's own defaults
+    # are the SINGLE SOURCE OF TRUTH. The wrapper never injects its own
+    # values, so updating defaults requires editing exactly one file
+    # (playable.py) and a normal _reload_mcp_modules call picks them up.
+    kwargs: dict[str, Any] = {"overwrite": overwrite}
+    if terrain_seed is not None:
+        kwargs["terrain_seed"] = terrain_seed
     if terrain_region is not None:
-        kwargs["terrain_region"] = tuple(terrain_region)  # type: ignore[arg-type]
+        kwargs["terrain_region"] = tuple(terrain_region)
+    if terrain_scale is not None:
+        kwargs["terrain_scale"] = terrain_scale
+    if world_units_per_meter is not None:
+        kwargs["world_units_per_meter"] = world_units_per_meter
+    if floor_thickness_units is not None:
+        kwargs["floor_thickness_units"] = floor_thickness_units
+    if normalize_elevation is not None:
+        kwargs["normalize_elevation"] = normalize_elevation
     if terrain_origin is not None:
-        kwargs["terrain_origin"] = tuple(terrain_origin)  # type: ignore[arg-type]
+        kwargs["terrain_origin"] = tuple(terrain_origin)
+    if terrain_cell_size is not None:
+        kwargs["terrain_cell_size"] = terrain_cell_size
     if spawner_offsets is not None:
-        kwargs["spawner_offsets"] = tuple(tuple(o) for o in spawner_offsets)  # type: ignore[arg-type]
+        kwargs["spawner_offsets"] = tuple(tuple(o) for o in spawner_offsets)
+    if spawner_z_offset is not None:
+        kwargs["spawner_z_offset"] = spawner_z_offset
+    if terrain_server_url is not None:
+        kwargs["terrain_server_url"] = terrain_server_url
     return playable.make_terrain_zombie_arena(map_name, **kwargs)
 
 
@@ -1603,6 +1612,140 @@ def build_full(
 
 
 # --- Entry point -----------------------------------------------------------
+
+
+# --- Reusable composition helpers ----------------------------------------
+# These wrap building-block functions in zm.py and terrain.py that recipes
+# (and hand-authored maps) can compose. Calling them directly = the path
+# for non-demo-v3 layouts.
+
+
+@mcp.tool()
+def add_barricaded_starter_room(
+    map_name: str,
+    mins: list[float],
+    maxs: list[float],
+    zone_name: str = "start_zone",
+    is_starting_zone: bool = True,
+    courtyard_depth: float = 176.0,
+    wall_thickness: float = 16.0,
+    window_width: float = 64.0,
+    window_height: float = 48.0,
+    window_bottom: float = 48.0,
+    extra_openings: list[dict] | None = None,
+    skip_zone_registration: bool = False,
+) -> dict:
+    """Verified-working zombie starter recipe — room + 2 outdoor courtyards
+    + 2 barricade windows + 2 interior+courtyard lights + zone, in ONE call.
+
+    Replaces the ~6 inline calls (carve_room_with_openings × 2 courtyards
+    × 2 add_light × 2 add_zombie_window × add_zombie_zone) that any new
+    playable zombie map needs. Encodes all the v22.10 invariants
+    (window_bottom=48 waist-height, window_height=48 plank-flush, 176-unit
+    courtyard depth, barricade-paired riser spawn structs) so future maps
+    inherit them automatically.
+
+    Use this for ANY zombie map's starting zone. Not coupled to demo coords.
+
+    `extra_openings`: additional opening dicts (e.g., a doorway to an
+    arena) appended to the south/north barricade windows. Each dict:
+    `{"side": "south"|"north"|"east"|"west", "width": N, "height": N,
+       "center_offset": N (optional, default 0),
+       "bottom": N (optional, default 0)}`.
+
+    Returns: dict with the carved room, both courtyards, zone info (if
+    registered), the interior+courtyard light GUIDs, and the barricade
+    window pairs.
+    """
+    return zm.add_barricaded_starter_room(
+        map_name,
+        mins=tuple(mins),  # type: ignore[arg-type]
+        maxs=tuple(maxs),  # type: ignore[arg-type]
+        zone_name=zone_name,
+        is_starting_zone=is_starting_zone,
+        courtyard_depth=courtyard_depth,
+        wall_thickness=wall_thickness,
+        window_width=window_width,
+        window_height=window_height,
+        window_bottom=window_bottom,
+        extra_openings=extra_openings,
+        skip_zone_registration=skip_zone_registration,
+    )
+
+
+@mcp.tool()
+def place_zombie_spawners_on_terrain(
+    map_name: str,
+    positions: list[list[float]],
+    zone_name: str,
+    z_offset: float = 4.0,
+    location_type: str = "riser_location",
+    script_string: str | None = None,
+    count: int = 9999,
+    fallback_z: float = 16.0,
+) -> dict:
+    """Place N zombie spawners on the diffusion terrain surface of `map_name`.
+
+    For each (x, y) in `positions`, queries the heightmap sidecar via
+    `terrain_height_at_xy` and places a zombie spawner at z = terrain_top
+    + z_offset. Spawners outside the terrain footprint fall back to
+    `fallback_z` (default 16, the canonical floor surface).
+
+    Requires the target map to have terrain produced by
+    `generate_terrain_diffusion` (which writes the sidecar JSON). Reusable
+    from any recipe or hand-authored zombie map.
+
+    Each spawner gets script_string="find_flesh" by default (the AI
+    pursue-player trigger from v22.9). Use `location_type="spawn_location"`
+    instead of the default `riser_location` for non-rising spawn animation.
+
+    Returns: dict with `placed` list (one entry per spawner with world
+    coords + factory GUID), `count`, and `outside_terrain_count`.
+    """
+    return terrain.place_zombie_spawners_on_terrain(
+        map_name,
+        positions=[tuple(p) for p in positions],  # type: ignore[arg-type]
+        zone_name=zone_name,
+        z_offset=z_offset,
+        location_type=location_type,
+        script_string=script_string,
+        count=count,
+        fallback_z=fallback_z,
+    )
+
+
+@mcp.tool()
+def place_perks_on_terrain(
+    map_name: str,
+    perks_layout: list[list],
+    fallback_z: float = 16.0,
+) -> dict:
+    """Place perk machines on the diffusion terrain surface of `map_name`.
+
+    `perks_layout` is a list of [perk_slug, [x, y]] entries. Each perk is
+    placed at z = terrain_top via `terrain_height_at_xy`, so perks sit on
+    the surface instead of being buried by terrain rising above z=16.
+
+    Reusable from any recipe. Requires the target map to have a terrain
+    sidecar (generate_terrain_diffusion writes one).
+
+    Available perk slugs: see add_perk's docstring or list_perks.
+
+    Returns: dict with `placed` list and `count`.
+    """
+    parsed: list[tuple[str, tuple[float, float]]] = []
+    for entry in perks_layout:
+        if not (isinstance(entry, (list, tuple)) and len(entry) == 2):
+            raise ValueError(f"perks_layout entry must be [perk_slug, [x, y]], got {entry!r}")
+        perk_slug, xy = entry
+        if not (isinstance(xy, (list, tuple)) and len(xy) == 2):
+            raise ValueError(f"perks_layout entry's xy must be [x, y], got {xy!r}")
+        parsed.append((str(perk_slug), (float(xy[0]), float(xy[1]))))
+    return terrain.place_perks_on_terrain(
+        map_name,
+        perks_layout=parsed,
+        fallback_z=fallback_z,
+    )
 
 
 def main() -> None:

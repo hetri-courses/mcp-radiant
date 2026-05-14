@@ -894,6 +894,129 @@ def terrain_height_at_xy(
     }
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Reusable terrain-aware placement helpers — work for ANY map whose terrain
+# was emitted via generate_terrain_diffusion (i.e., has a sidecar). Not
+# coupled to playable.py's specific recipe.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def place_zombie_spawners_on_terrain(
+    map_name: str,
+    positions: list[tuple[float, float]],
+    *,
+    zone_name: str,
+    z_offset: float = 4.0,
+    location_type: str = "riser_location",
+    script_string: str | None = None,
+    count: int = 9999,
+    angles: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    fallback_z: float = 16.0,
+) -> dict:
+    """Place N zombie spawners on the terrain surface of `map_name`.
+
+    For each (x, y) in `positions`, queries terrain_height_at_xy and places
+    a spawner at z = terrain_top + z_offset. Spawners outside the terrain
+    footprint fall back to z=`fallback_z` (default 16 = canonical floor
+    surface) and are flagged in the return dict.
+
+    Each spawner gets:
+      - The given `zone_name` (auto-suffixed with '_zone' if missing) →
+        spawn struct has targetname='<zone>_spawners'.
+      - `location_type` (default 'riser_location' — zombies rise from
+        terrain). Use 'spawn_location' for non-rising appearance.
+      - `script_string` (default None → falls through to add_zombie_spawner's
+        'find_flesh' default — the AI behavior trigger).
+      - `count` (default 9999, effectively unlimited per spawner).
+
+    Usable from any recipe (playable.py, future recipes, hand-authored
+    maps). Not coupled to a particular zone graph or room layout.
+
+    Returns:
+        {
+          "placed": [{"xy": (x,y), "world": (x,y,z), "terrain_z": float,
+                      "found": bool, "factory_guid": str, ...}, ...],
+          "count": int,
+          "outside_terrain_count": int,  # >0 means some fell to fallback_z
+        }
+
+    Lazy-imports zm to avoid the terrain↓zm circular dependency at module
+    load time (zm imports geometry, not terrain).
+    """
+    from . import zm as _zm  # local import — terrain is below zm in reload order
+
+    placed: list[dict] = []
+    outside = 0
+    for (x, y) in positions:
+        h = terrain_height_at_xy(map_name, x, y)
+        if h["found"]:
+            spawn_z = h["z"] + z_offset
+        else:
+            spawn_z = fallback_z + z_offset
+            outside += 1
+        info = _zm.add_zombie_spawner(
+            map_name,
+            origin=(float(x), float(y), float(spawn_z)),
+            angles=angles,
+            zone_name=zone_name,
+            count=count,
+            location_type=location_type,
+            script_string=script_string,
+        )
+        placed.append({
+            "xy": (float(x), float(y)),
+            "world": (float(x), float(y), float(spawn_z)),
+            "terrain_z": float(h["z"]) if h["found"] else None,
+            "terrain_found": h["found"],
+            "factory_guid": info["factory_guid"],
+            "spawn_struct_guid": info["location_struct_guid"],
+        })
+    return {
+        "placed": placed,
+        "count": len(placed),
+        "outside_terrain_count": outside,
+    }
+
+
+def place_perks_on_terrain(
+    map_name: str,
+    perks_layout: list[tuple[str, tuple[float, float]]],
+    *,
+    angles: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    fallback_z: float = 16.0,
+) -> dict:
+    """Place perk machines on the terrain surface.
+
+    `perks_layout` is a list of (perk_slug, (x, y)) tuples. Each perk
+    is placed at z = terrain_top via terrain_height_at_xy. Perks
+    outside the terrain footprint fall back to z=`fallback_z`.
+
+    Perk prefabs are designed so the origin sits AT the floor surface;
+    no z_offset added (unlike spawners, where the prefab includes the
+    spawn-from-below animation that needs a small clearance).
+
+    Reusable from any recipe. Not coupled to a particular zone layout.
+
+    Returns:
+        {"placed": [{"perk", "xy", "z", "terrain_found"}, ...], "count": int}
+    """
+    from . import zm as _zm
+
+    placed: list[dict] = []
+    for perk_slug, (x, y) in perks_layout:
+        h = terrain_height_at_xy(map_name, x, y)
+        pz = h["z"] if h["found"] else fallback_z
+        _zm.add_perk(map_name, perk_slug, origin=(float(x), float(y), float(pz)),
+                     angles=angles)
+        placed.append({
+            "perk": perk_slug,
+            "xy": (float(x), float(y)),
+            "z": float(pz),
+            "terrain_found": h["found"],
+        })
+    return {"placed": placed, "count": len(placed)}
+
+
 def start_terrain_diffusion_server(
     *,
     model: str = "xandergos/terrain-diffusion-30m",
