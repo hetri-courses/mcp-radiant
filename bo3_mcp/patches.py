@@ -55,14 +55,28 @@ def mesh_block(
     """Emit a single `mesh` brush body (renderable triangulated patch).
 
     Args:
-        control_points: 2D grid `cps[row][col]` of (x, y, z) tuples. Rows
-            and columns each correspond to one axis on the patch grid;
-            the engine triangulates between adjacent cells.
+        control_points: 2D grid `cps[outer][inner]` of (x, y, z) tuples.
+            ⚠️  CRITICAL CONVENTION (verified against stock
+            `mp_sector_terrain_north_tunnel_rocks.map`):
+                - the OUTER index varies along the +X axis (i.e.
+                  cps[0..outer_max] sweeps across X)
+                - the INNER index varies along the +Y axis (i.e.
+                  cps[i][0..inner_max] sweeps across Y)
+            Using this convention, the patch's surface normal points +Z
+            (UP), so the patch is visible from above (e.g. for terrain
+            floors). If you pass cps with outer→Y and inner→X, the
+            normal points DOWN and the patch is back-face culled from
+            above — visible only from below / grazing angles.
         texture: render material name.
         lightmap: lightmap material (almost always `lightmap_gray`).
-        contents: if set, emits a `contents <flags>;` line — pass e.g.
-            `"weaponClip detail ai_nosight"` for a collision-only twin.
-            If None, the mesh is renderable (no collision).
+        contents: if set, emits a `contents <flags>;` line. For
+            walkable floor terrain pass `"weaponClip detail"`. For
+            obstacles (rocks, etc.) where you also want AI line-of-sight
+            blocked, use `"weaponClip detail ai_nosight"`. DO NOT use
+            `ai_nosight` on floor terrain — it stops zombies from
+            seeing the player across the patch.
+            If None, the mesh is renderable but has no collision (the
+            player walks through).
         uv_scale: how many BO3 inches one texture pixel represents.
             8.0 matches stock terrain (texture wraps every ~64-inch
             cell). Lower = denser tiling. Sign is flipped on V to
@@ -223,36 +237,44 @@ def heightmap_to_mesh_patches(
 
     Splits the heightmap into chunks of `chunk_size + 1` control points
     per side (so each chunk spans `chunk_size` cells). Each cell corner
-    becomes one control point; the Z value is `heightmap[row][col]`.
+    becomes one control point; the Z value is `heightmap[y_idx][x_idx]`.
     Adjacent chunks SHARE an edge of control points so there's no seam.
 
     Args:
-        heightmap: 2D grid of Z heights. `heightmap[row][col]` is the
-            world-Z of the corner at (origin.x + col*cell_size,
-            origin.y + row*cell_size).
-        origin: world-space anchor for the (0,0) corner.
+        heightmap: 2D grid of Z heights, indexed as `heightmap[y_idx][x_idx]`
+            where x_idx → +X and y_idx → +Y. (Natural reading order — the
+            "first row" of heightmap is at low Y, and within a row, columns
+            sweep across X.) The function transposes internally to emit the
+            mesh in BO3's stock outer→X, inner→Y convention (verified
+            against `mp_sector_terrain_north_tunnel_rocks.map`), which
+            gives upward-facing surface normals.
+        origin: world-space anchor for the (x=0, y=0) corner.
         cell_size: BO3 inches per cell.
         chunk_size: spans per patch (control points = chunk_size + 1
             per side). 8 means 9x9 control points per patch — matches
             burn_barrel's 9x3 dim, well within engine limits.
         visual_texture: render material for the visible mesh.
         collision_texture: render material for the collision twin. Set
-            to None to emit visual ONLY (no collision); BO3 won't let
-            the player walk on a contents-less mesh.
+            to None to emit visual ONLY (no collision); the player will
+            walk through a contents-less mesh.
+            ⚠️ Defaults are inherited from the stock ROCK pattern
+            (`weaponClip detail ai_nosight`). For walkable FLOOR terrain,
+            override `collision_texture` or — better — use `mesh_block`
+            directly with `contents="weaponClip detail"` (no `ai_nosight`).
         uv_scale: world-to-texture UV scale (8.0 matches stock).
 
     Returns: flat list of brush body strings. Append all to your
     worldspawn entity's `brushes` list (or to a prefab entity)."""
-    rows = len(heightmap)
-    cols = len(heightmap[0]) if rows else 0
-    if rows < 2 or cols < 2:
+    y_count = len(heightmap)
+    x_count = len(heightmap[0]) if y_count else 0
+    if y_count < 2 or x_count < 2:
         raise ValueError(
-            f"heightmap must be at least 2x2 corners; got {rows}x{cols}"
+            f"heightmap must be at least 2x2 corners; got {y_count}x{x_count}"
         )
-    for r, row in enumerate(heightmap):
-        if len(row) != cols:
+    for yi, row in enumerate(heightmap):
+        if len(row) != x_count:
             raise ValueError(
-                f"heightmap row {r} has length {len(row)}; expected {cols}"
+                f"heightmap row {yi} has length {len(row)}; expected {x_count}"
             )
     if chunk_size < 1:
         raise ValueError(f"chunk_size must be >= 1; got {chunk_size}")
@@ -260,23 +282,27 @@ def heightmap_to_mesh_patches(
     ox, oy, _oz = origin
     out: list[str] = []
 
-    # Walk over chunks. Each chunk covers [r0..r0+chunk_size] rows
-    # (inclusive) and [c0..c0+chunk_size] cols (inclusive), so a chunk
-    # has (chunk_size+1)^2 control points. Adjacent chunks share an
-    # edge of CPs (last row of one = first row of next).
-    r0 = 0
-    while r0 < rows - 1:
-        r1 = min(r0 + chunk_size, rows - 1)
-        c0 = 0
-        while c0 < cols - 1:
-            c1 = min(c0 + chunk_size, cols - 1)
+    # Walk over chunks in X-major, Y-minor order to match BO3's
+    # outer→X, inner→Y convention. Each chunk covers
+    # [x0..x0+chunk_size] X-indices and [y0..y0+chunk_size] Y-indices,
+    # so a chunk has (chunk_size+1)^2 control points. Adjacent chunks
+    # share an edge of CPs (no seams).
+    x0 = 0
+    while x0 < x_count - 1:
+        x1 = min(x0 + chunk_size, x_count - 1)
+        y0 = 0
+        while y0 < y_count - 1:
+            y1 = min(y0 + chunk_size, y_count - 1)
+            # Build cps[outer_x][inner_y] = (wx, wy, wz). Outer index
+            # varies in X, inner in Y — the convention that gives
+            # +Z-facing surface normals.
             cps: list[list[Point]] = []
-            for r in range(r0, r1 + 1):
+            for xi in range(x0, x1 + 1):
                 row_cps: list[Point] = []
-                for c in range(c0, c1 + 1):
-                    wx = ox + c * cell_size
-                    wy = oy + r * cell_size
-                    wz = heightmap[r][c]
+                for yi in range(y0, y1 + 1):
+                    wx = ox + xi * cell_size
+                    wy = oy + yi * cell_size
+                    wz = heightmap[yi][xi]
                     row_cps.append((wx, wy, wz))
                 cps.append(row_cps)
             visual = mesh_block(
@@ -291,8 +317,8 @@ def heightmap_to_mesh_patches(
                     uv_scale=uv_scale,
                 )
                 out.append(collision)
-            c0 = c1
-        r0 = r1
+            y0 = y1
+        x0 = x1
     return out
 
 

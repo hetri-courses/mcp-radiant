@@ -191,7 +191,39 @@ Other terrain-y textures (from list_textures + grepping stock maps):
 - Player spawn: on a plain flat floor brush, far from patches.
 
 Compile output: NO "terrain patches with caulk" warning, no errors,
-leak null, navmesh generated. Runtime verification pending playtest.
+leak null, navmesh generated.
+
+**v23.2 fix: control-point axis convention.** lab_02 runtime playtest
+revealed:
+- Collision WORKS (player walked up the slopes as expected).
+- Patches were INVISIBLE from above, only visible from underneath at
+  grazing angles. The surface normal was pointing DOWN — patches were
+  back-face culled.
+
+Cause: the control-point grid axis order. Stock Treyarch
+(`mp_sector_terrain_north_tunnel_rocks.map`) uses:
+- **outer index (W in `W H T1 T2` dim line) → +X axis**
+- **inner index (H) → +Y axis**
+
+This convention gives +Z-facing surface normals. The v23.0/v23.1
+emitter had it backward (outer→Y, inner→X), producing -Z normals.
+
+Verified by parsing stock rock prefab CPs:
+- row 0 col 0 = (-747, 2483, 368)
+- row 1 col 0 = (-631, 2475, 368)  — outer step: dx≈+116, dy≈-8 (X-dominant)
+- row 0 col 1 = (-684, 2515, 389)  — inner step: dx≈+63, dy≈+32 (Y-dominant)
+
+**Fix in `patches.py` v23.2:**
+- `mesh_block` docstring now explicitly documents the convention.
+- `heightmap_to_mesh_patches` reorders internally: it accepts
+  `heightmap[y_idx][x_idx]` (natural reading order) but emits
+  `cps[outer_x][inner_y]` so the engine sees +Z normals.
+
+When emitting a patch by hand via `mesh_block`, build your
+`control_points` as `cps[x_index][y_index]` — the OUTER loop sweeps X.
+
+If a patch is invisible from above but visible from below, the axis
+order is wrong.
 
 ## Voxel terrain reference (for fallback mode)
 
