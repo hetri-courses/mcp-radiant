@@ -244,6 +244,10 @@ def make_terrain_zombie_arena(
     smooth_iterations: int | None = None,
     auto_flatten_doorway_pads: bool | None = None,
     extra_flatten_pads: list[dict] | None = None,
+    terrain_render_mode: str | None = None,
+    patch_chunk_size: int | None = None,
+    patch_visual_texture: str | None = None,
+    patch_min_z_offset: float | None = None,
     terrain_server_url: str | None = None,
     overwrite: bool = False,
 ) -> dict:
@@ -311,6 +315,14 @@ def make_terrain_zombie_arena(
         kwargs["auto_flatten_doorway_pads"] = auto_flatten_doorway_pads
     if extra_flatten_pads is not None:
         kwargs["extra_flatten_pads"] = extra_flatten_pads
+    if terrain_render_mode is not None:
+        kwargs["terrain_render_mode"] = terrain_render_mode
+    if patch_chunk_size is not None:
+        kwargs["patch_chunk_size"] = patch_chunk_size
+    if patch_visual_texture is not None:
+        kwargs["patch_visual_texture"] = patch_visual_texture
+    if patch_min_z_offset is not None:
+        kwargs["patch_min_z_offset"] = patch_min_z_offset
     if terrain_server_url is not None:
         kwargs["terrain_server_url"] = terrain_server_url
     return playable.make_terrain_zombie_arena(map_name, **kwargs)

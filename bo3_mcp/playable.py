@@ -345,6 +345,15 @@ def make_terrain_zombie_arena(
     smooth_iterations: int = 1,
     auto_flatten_doorway_pads: bool = True,
     extra_flatten_pads: list[dict] | None = None,
+    # v23.5: how the heightmap becomes brushes. "patch_mesh" emits
+    # smooth-surface mesh patches (Treyarch's outdoor terrain pattern;
+    # runtime-verified May 14 2026 in zm_patch_ai_lab_02 — visible,
+    # walkable, AI pathfinds across, line-of-sight unbroken). "voxel"
+    # falls back to v22 box-column terrain for the rocky-mesa look.
+    terrain_render_mode: str = "patch_mesh",
+    patch_chunk_size: int = 8,
+    patch_visual_texture: str = "t7_concrete_pebbles_cracked",
+    patch_min_z_offset: float = 2.0,
     terrain_server_url: str = "http://localhost:8000",
     overwrite: bool = False,
 ) -> dict[str, Any]:
@@ -481,6 +490,10 @@ def make_terrain_zombie_arena(
         edge_feather_units=edge_feather_units,
         smooth_iterations=smooth_iterations,
         flatten_pads=pads if pads else None,
+        terrain_render_mode=terrain_render_mode,
+        patch_chunk_size=patch_chunk_size,
+        patch_visual_texture=patch_visual_texture,
+        patch_min_z_offset=patch_min_z_offset,
     )
     summary["steps"].append({
         "terrain_brushes": terrain_result.get("brushes_added"),

@@ -656,6 +656,15 @@ def generate_terrain_diffusion(
     edge_feather_units: float = 0.0,
     smooth_iterations: int = 0,
     flatten_pads: list[dict] | None = None,
+    # v23.5 patch-mesh rendering. "voxel" = previous v22 behavior (one
+    # box brush per heightmap cell); "patch_mesh" = smooth surfaces
+    # via patches.heightmap_to_mesh_patches. The patch path was runtime-
+    # verified in zm_patch_ai_lab_02 (May 14 2026): visible from above,
+    # walkable, AI pathfinds across, line-of-sight unbroken.
+    terrain_render_mode: str = "voxel",
+    patch_chunk_size: int = 8,
+    patch_visual_texture: str = "t7_concrete_pebbles_cracked",
+    patch_min_z_offset: float = 2.0,  # lift patches above the room floor to avoid Z-fight
 ) -> dict:
     """Generate BO3 terrain using xandergos/terrain-diffusion as the heightmap
     source. Hits the REST API, converts meters → BO3 inches, places brushes.
@@ -866,27 +875,78 @@ def generate_terrain_diffusion(
             f"Call preview_terrain_diffusion_region first to scout."
         )
 
-    if height_bands is None:
-        # Auto-band based on observed elevation range
-        oz = origin[2]
-        max_z = max((max(r) for r in scaled), default=0.0)
-        if max_z > 0:
-            height_bands = [
-                (oz + max_z * 0.25, "t7_concrete_pebbles_cracked"),  # low: shore/dirt
-                (oz + max_z * 0.65, "t7_concrete_wall_dark_01"),     # mid: rock
-                (oz + max_z * 1.5,  "t7_concrete_bare_dark_01_wet"), # high: snowcap-ish
-            ]
+    if terrain_render_mode == "patch_mesh":
+        # ── v23.5 PATCH-MESH EMISSION ────────────────────────────────
+        # Render the heightmap as smooth mesh patches (Treyarch's stock
+        # outdoor terrain pattern; see
+        # `_prefabs/mp/mp_sector/geo/mp_sector_terrain_north_tunnel_rocks.map`).
+        # The patches form a continuous surface that interpolates
+        # smoothly between control points — no voxel staircase.
+        #
+        # Lift heights by `patch_min_z_offset` so the patches sit just
+        # above the underlying room floor brush (typically z=[0..16]).
+        # Without the lift, flat cells at z=floor_thickness would
+        # Z-fight with the floor. The lift is applied to `scaled` (and
+        # thus persisted in the sidecar), so any auto-Z helpers like
+        # `place_zombie_spawners_on_terrain` and `place_perks_on_terrain`
+        # also see the correct patch-surface height.
+        from . import patches as _patches
+        if patch_min_z_offset > 0:
+            scaled = [[v + patch_min_z_offset for v in row] for row in scaled]
+            preprocessing_applied["patch_min_z_offset"] = float(patch_min_z_offset)
+        patch_bodies = _patches.heightmap_to_mesh_patches(
+            scaled,
+            origin=origin,
+            cell_size=cell_size,
+            chunk_size=patch_chunk_size,
+            visual_texture=patch_visual_texture,
+            collision_texture=patch_visual_texture,  # same material on both halves
+            collision_contents=_patches.FLOOR_COLLISION_CONTENTS,
+        )
+        mf, ws = geometry._load_top(map_name)
+        for body in patch_bodies:
+            ws.brushes.append(body)
+        geometry._save_top(mf, map_name)
+        ox, oy, oz = origin
+        result = {
+            "brushes_added": len(patch_bodies),
+            "grid_shape": (rows, cols),
+            "cell_size": cell_size,
+            "height_scale": 1.0,
+            "origin": origin,
+            "footprint_mins": (ox, oy, oz),
+            "footprint_maxs": (ox + cols * cell_size, oy + rows * cell_size, oz),
+            "texture_usage": {patch_visual_texture: len(patch_bodies)},
+            "merge_strips": False,
+            "worldspawn_total_brushes": len(ws.brushes),
+            "render_mode": "patch_mesh",
+            "patch_chunk_size": patch_chunk_size,
+            "patch_min_z_offset": patch_min_z_offset,
+        }
+    else:
+        # ── VOXEL EMISSION (v22 fallback) ────────────────────────────
+        if height_bands is None:
+            # Auto-band based on observed elevation range
+            oz = origin[2]
+            max_z = max((max(r) for r in scaled), default=0.0)
+            if max_z > 0:
+                height_bands = [
+                    (oz + max_z * 0.25, "t7_concrete_pebbles_cracked"),  # low: shore/dirt
+                    (oz + max_z * 0.65, "t7_concrete_wall_dark_01"),     # mid: rock
+                    (oz + max_z * 1.5,  "t7_concrete_bare_dark_01_wet"), # high: snowcap-ish
+                ]
 
-    result = heightmap_to_brushes(
-        map_name, scaled,
-        origin=origin,
-        cell_size=cell_size,
-        height_scale=1.0,  # heightmap is already in world units
-        height_bands=height_bands,
-        skip_below=0.0,
-        merge_strips=merge_strips,
-        max_brushes=max_brushes,
-    )
+        result = heightmap_to_brushes(
+            map_name, scaled,
+            origin=origin,
+            cell_size=cell_size,
+            height_scale=1.0,  # heightmap is already in world units
+            height_bands=height_bands,
+            skip_below=0.0,
+            merge_strips=merge_strips,
+            max_brushes=max_brushes,
+        )
+        result["render_mode"] = "voxel"
     result["source"] = "terrain-diffusion"
     result["model_meta"] = {
         "region_pixels": (i2 - i1, j2 - j1),

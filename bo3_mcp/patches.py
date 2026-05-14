@@ -287,14 +287,18 @@ def curve_block(
 # --- Heightmap → patch chunks ----------------------------------------------
 
 
+FLOOR_COLLISION_CONTENTS = "weaponClip detail"  # verified-OK for walkable floors
+
+
 def heightmap_to_mesh_patches(
     heightmap: Sequence[Sequence[float]],
     *,
     origin: Point = (0.0, 0.0, 0.0),
     cell_size: float = 64.0,
     chunk_size: int = 8,
-    visual_texture: str = DEFAULT_TERRAIN_TEXTURE,
-    collision_texture: str | None = DEFAULT_COLLISION_TEXTURE,
+    visual_texture: str = "t7_concrete_pebbles_cracked",
+    collision_texture: str | None = "t7_concrete_pebbles_cracked",
+    collision_contents: str = FLOOR_COLLISION_CONTENTS,
     uv_scale: float = 8.0,
 ) -> list[str]:
     """Convert a 2D heightmap into a list of mesh-brush bodies.
@@ -377,7 +381,7 @@ def heightmap_to_mesh_patches(
                 collision = mesh_block(
                     cps,
                     texture=collision_texture,
-                    contents=COLLISION_CONTENTS,
+                    contents=collision_contents,
                     uv_scale=uv_scale,
                 )
                 out.append(collision)
