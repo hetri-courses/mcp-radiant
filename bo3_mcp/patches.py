@@ -41,6 +41,58 @@ DEFAULT_LIGHTMAP = "lightmap_gray"
 COLLISION_CONTENTS = "weaponClip detail ai_nosight"
 
 
+def _orient_up(control_points: Sequence[Sequence[Point]]) -> list[list[Point]]:
+    """Normalize a CP grid so outer→+X-dominant, inner→+Y-dominant.
+
+    The patch's surface normal direction depends on the winding of the
+    control points. For terrain (floors), we want +Z-facing normals,
+    which requires the outer index to increase in +X and the inner
+    index to increase in +Y (verified empirically against
+    `mp_sector_terrain_north_tunnel_rocks.map`).
+
+    Heuristic:
+      1. Compute outer step (cps[1][0] - cps[0][0]) and inner step
+         (cps[0][1] - cps[0][0]).
+      2. If outer step is Y-dominant, the caller passed the grid in
+         transposed orientation — transpose it so outer becomes
+         X-dominant.
+      3. If outer step (after possible transpose) goes in -X, reverse
+         the outer order.
+      4. If inner step (after possible transpose) goes in -Y, reverse
+         the inner order in each row.
+
+    Returns a new list-of-lists; does not mutate input."""
+    rows = len(control_points)
+    cols = len(control_points[0]) if rows else 0
+    if rows < 2 or cols < 2:
+        # Nothing to reorient; let the caller's validator catch this.
+        return [list(row) for row in control_points]
+
+    outer_dx = control_points[1][0][0] - control_points[0][0][0]
+    outer_dy = control_points[1][0][1] - control_points[0][0][1]
+    inner_dx = control_points[0][1][0] - control_points[0][0][0]
+    inner_dy = control_points[0][1][1] - control_points[0][0][1]
+
+    # If outer is Y-dominant, the user passed the grid transposed —
+    # transpose so the new outer is the old inner (which was X-dominant).
+    if abs(outer_dy) > abs(outer_dx):
+        new = [[control_points[r][c] for r in range(rows)] for c in range(cols)]
+        # After transpose, swap the step variables to reflect the new layout.
+        outer_dx, outer_dy = inner_dx, inner_dy
+        inner_dx, inner_dy = (
+            control_points[1][0][0] - control_points[0][0][0],
+            control_points[1][0][1] - control_points[0][0][1],
+        )
+    else:
+        new = [list(row) for row in control_points]
+
+    if outer_dx < 0:
+        new.reverse()
+    if inner_dy < 0:
+        new = [list(reversed(row)) for row in new]
+    return new
+
+
 def mesh_block(
     control_points: Sequence[Sequence[Point]],
     *,
@@ -51,6 +103,7 @@ def mesh_block(
     lightmap_scale: float = 1.0,
     tess_t1: int = 0,
     tess_t2: int = 8,
+    auto_orient: bool = True,
 ) -> str:
     """Emit a single `mesh` brush body (renderable triangulated patch).
 
@@ -86,6 +139,11 @@ def mesh_block(
         tess_t1, tess_t2: subdivision flags. Defaults (0, 8) match
             Treyarch's stock TERRAIN meshes. For Bezier curves use
             `curve_block()` instead.
+        auto_orient: if True (default), automatically normalize the CP
+            grid so outer→+X-dominant and inner→+Y-dominant, ensuring
+            +Z-facing surface normals (visible from above). Set False
+            ONLY when you specifically need downward-facing normals
+            (e.g., a ceiling patch).
 
     Returns: brush body text suitable for appending to `Entity.brushes`.
     """
@@ -102,6 +160,12 @@ def mesh_block(
         raise ValueError(
             f"mesh requires at least 2x2 control points; got {rows}x{cols}"
         )
+
+    if auto_orient:
+        control_points = _orient_up(control_points)
+        # auto-orient may have transposed, refresh dims
+        rows = len(control_points)
+        cols = len(control_points[0])
 
     lines: list[str] = ["{\n", f' guid "{mapfile.new_guid()}"\n', "  mesh\n", "  {\n"]
     if contents:

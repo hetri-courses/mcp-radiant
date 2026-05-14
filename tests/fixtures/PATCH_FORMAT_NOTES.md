@@ -225,7 +225,35 @@ When emitting a patch by hand via `mesh_block`, build your
 If a patch is invisible from above but visible from below, the axis
 order is wrong.
 
-**v23.2 runtime VERIFIED (zm_patch_lab_03 playtest):**
+**v23.4 (zm_patch_ai_lab_01 → ai_lab_02): two more bugs caught**
+
+ai_lab_01 runtime had TWO regressions vs lab_03:
+
+1. **Patch invisible again.** lab_03 worked because its CPs happened to
+   sweep +X in the outer index. ai_lab_01's ramp helper made outer X
+   *decrease* (128 → -64), which flipped the normal direction. The rule
+   isn't just "outer = X axis" — it's "outer must INCREASE in +X."
+
+   v23.4 fix: `mesh_block` now has `auto_orient=True` (default). It
+   inspects the first outer/inner steps and:
+   - transposes if outer is Y-dominant
+   - reverses the outer order if outer step is -X
+   - reverses each row if inner step is -Y
+   so the emitted mesh ALWAYS has +Z normals regardless of how the
+   caller built the CP grid. Set `auto_orient=False` only for ceiling
+   patches where you want a downward normal.
+
+2. **No zombies spawned.** `add_barricaded_starter_room` adds the
+   barricade prefabs + exterior riser script_structs but does NOT
+   add an `actor_spawner_zm_factory_zombie` — that's the AI template
+   the framework uses to instantiate zombies. Without one, the spawn
+   structs are dangling targets with no source factory.
+
+   In `make_playable_zombie_foundation` this is handled by the
+   subsequent `furnish_zone` call. In a standalone test map you must
+   call `add_zombie_spawner(..., zone_name=...)` explicitly somewhere
+   in the zone (the origin doesn't need to be visible — it's just
+   the AI template).
 - Slopes render correctly from above with their declared materials
 - Player walks up `weaponClip detail` slopes smoothly
 - `contents=None` slopes have no collision (player walks through)
