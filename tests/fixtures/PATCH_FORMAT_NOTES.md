@@ -137,6 +137,62 @@ Other terrain-y textures (from list_textures + grepping stock maps):
 - `patch_door_frame_2x2.mapfrag` — smallest possible mesh (door frame)
 - `patch_curve_glass_arch.mapfrag` — curve example for comparison
 
+## Runtime status (v23.0 vs v23.1)
+
+**v23.0 lessons that did not survive playtest:**
+
+1. **Compile acceptance ≠ runtime correctness.** `cod2map64` printing
+   `building curve/terrain collision...` proves the format parsed; it
+   does NOT prove the patch renders, collides, or pathfinds correctly.
+   Runtime playtest is the only verification that counts.
+
+2. **DO NOT use `caulk` as the texture on a collision-twin patch.**
+   `cod2map64` emits this warning at compile time:
+
+       *****
+       N terrain patches with caulk were discovered.
+       Use 'File/Load Error File/General Error File' in Radiant to view.
+       *****
+
+   The build still succeeds (rc=0) but the resulting patches render as
+   dark/black blobs in-game and the lighting bake doesn't process them
+   correctly. Match Treyarch's stock pattern: BOTH the visual mesh and
+   the collision twin use real material names (e.g.
+   `t7_concrete_pebbles_cracked` on both, with the contents flag
+   determining behavior). The collision twin is rendered but barely
+   visible because BSP folds it onto the visual mesh.
+
+3. **`ai_nosight` is for OBSTACLES, not floors.** The stock pattern
+   `weaponClip detail ai_nosight` is correct for rock terrain (zombies
+   path AROUND the rock, not through it). For walkable FLOOR terrain,
+   `ai_nosight` blocks zombies from seeing across the patch, breaking
+   their pathing. For floor patches use `weaponClip detail` only — no
+   `ai_nosight`.
+
+4. **Player spawn must NOT overlap a patch footprint.** In zm_patch_format_test
+   the patch covered x=[-400..-144] y=[-128..128], and player spawn at
+   (-320, 0, 32) was inside that XY footprint. The patch surface at
+   (-320, 0) was z≈40, above the spawn z=32 — the player was pushed up
+   onto the patch at spawn, producing the "weirdly elevated" feeling.
+   Player spawns must be on plain floor brushes well outside any patch
+   footprint.
+
+5. **Don't test patches in a map with delicate barricade/riser logic.**
+   The starter-room barricade+riser+courtyard pattern has zero margin
+   for new geometry interfering with zombie pathing. Patch tests belong
+   in their own isolated maps (`zm_patch_lab_NN`).
+
+**v23.1 verified-OK pattern (zm_patch_lab_02 build):**
+
+- Visual mesh: real material (e.g. `t7_concrete_pebbles_cracked`),
+  no `contents` line.
+- Collision twin (optional, only if you need solid floor collision):
+  SAME real material, `contents weaponClip detail` (no ai_nosight).
+- Player spawn: on a plain flat floor brush, far from patches.
+
+Compile output: NO "terrain patches with caulk" warning, no errors,
+leak null, navmesh generated. Runtime verification pending playtest.
+
 ## Voxel terrain reference (for fallback mode)
 
 `zm_terrain_test.map` is Treyarch's "terrain test" — and it's pure
