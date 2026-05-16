@@ -551,6 +551,21 @@ def make_terrain_zombie_arena(
         # Arena east doorway: x=768, centered at y=0, opens to vault.
         pads.append({"center": [736, 0], "radius": 64.0,
                      "z": floor_thickness_units})
+    # Wall-buy standing pads. The arena gun wall-buys are at the
+    # south/north walls (320, ∓496). The player stands ~80u inward to
+    # read/buy them. broken_floor terrain there is a lottery of flat
+    # valleys and raised peaks — sampling a single point for the chalk
+    # Z gave "one side unreachably high" (v23.12 playtest). Flatten a
+    # deterministic pad at each standing spot (same mechanism as the
+    # doorway pads): the player always stands on known flat ground, so
+    # the chalk Z is deterministic AND you're never buying a gun while
+    # standing on a slope/peak. WALL_BUY_STAND_POINTS is the single
+    # source of truth, reused by place_wall_buys_on_terrain below.
+    WALL_BUY_STAND_POINTS = [(320.0, -416.0), (320.0, 416.0)]  # 80u inward of ∓496
+    if include_wall_buys:
+        for sx, sy in WALL_BUY_STAND_POINTS:
+            pads.append({"center": [sx, sy], "radius": 96.0,
+                         "z": floor_thickness_units})
     if extra_flatten_pads:
         pads.extend(extra_flatten_pads)
 
@@ -626,11 +641,16 @@ def make_terrain_zombie_arena(
                 {"weapon": "ar_standard",  "origin": (320, 496, 8),  "angles": (0, 180, 0)},
             ],
             floor_baseline_z=floor_thickness_units,
-            # Sample terrain where the player STANDS to read the chalk
-            # (a standoff inward toward the arena centre), not at the
-            # near-flat footprint boundary the wall sits on.
+            # Sample at the flattened standing pad (80u inward toward
+            # the arena centre — matches WALL_BUY_STAND_POINTS). The pad
+            # makes terrain there deterministic (= floor + patch_z_off),
+            # so lift is a constant ~2, not a broken_floor lottery.
             sample_toward=(320.0, 0.0),
             standoff=80.0,
+            # Fixed rise above the flat pad so the gun outline sits at
+            # chest/eye height. Deterministic because the pad guarantees
+            # flat ground — can't go "unreachably high" (v23.12 bug).
+            eye_offset=28.0,
         )
         summary["steps"].append({
             "arena_wall_buys_on_terrain": wall_buys_result["count"],

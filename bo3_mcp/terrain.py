@@ -1272,6 +1272,7 @@ def place_wall_buys_on_terrain(
     floor_baseline_z: float = 16.0,
     sample_toward: tuple[float, float] | None = None,
     standoff: float = 64.0,
+    eye_offset: float = 0.0,
     fallback_z: float = 16.0,
 ) -> dict:
     """Place wall-buy weapons whose chalk Z tracks the terrain surface.
@@ -1323,7 +1324,13 @@ def place_wall_buys_on_terrain(
         h = terrain_height_at_xy(map_name, sx, sy)
         terrain_top = h["z"] if h.get("found") else fallback_z
         lift = max(0.0, terrain_top - floor_baseline_z)
-        chalk_z = z + lift
+        # `eye_offset` raises the chalk a fixed amount above the
+        # (deterministically flattened) standing surface so the gun
+        # outline reads at chest/eye height. This is reliable ONLY
+        # because the recipe flattens a pad at the sample point — the
+        # sample is no longer a broken_floor lottery, so a fixed
+        # offset can't land "unreachably high" (v23.12 bug) or buried.
+        chalk_z = z + lift + eye_offset
         _zm.add_wall_buy(map_name, wb["weapon"], (x, y, chalk_z), angles)
         placed.append({
             "weapon": wb["weapon"],
@@ -1331,6 +1338,7 @@ def place_wall_buys_on_terrain(
             "sample_xy": (round(sx, 1), round(sy, 1)),
             "base_z": z,
             "lift": round(lift, 1),
+            "eye_offset": eye_offset,
             "chalk_z": round(chalk_z, 1),
             "terrain_found": h.get("found", False),
         })
