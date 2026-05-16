@@ -1178,37 +1178,12 @@ def terrain_height_at_xy(
                 f"({ox}..{ox + cols * cell_size}, {oy}..{oy + rows * cell_size})"
             ),
         }
-    # BILINEAR interpolation of the 4 surrounding control points
-    # (v23.21). The patch mesh is a SMOOTH surface that interpolates
-    # between corner CPs; nearest-corner lookup
-    # (`heightmap[row][col]`) returned the cell's lower-left CP height,
-    # which on broken_floor terrain (flat z=18 next to raised z=58 over
-    # one 32u cell) is up to ~40u off the real rendered surface — so
-    # scatter props placed at that Z visibly FLOAT or sink. Bilerp
-    # matches the mesh closely (the engine triangulates each quad; a
-    # bilinear sample is a near-exact approximation and eliminates the
-    # gross offset).
-    col0 = max(0, min(cols - 1, int(col_f)))
-    row0 = max(0, min(rows - 1, int(row_f)))
-    col1 = min(cols - 1, col0 + 1)
-    row1 = min(rows - 1, row0 + 1)
-    fx = col_f - col0
-    fy = row_f - row0
-    fx = 0.0 if fx < 0 else (1.0 if fx > 1 else fx)
-    fy = 0.0 if fy < 0 else (1.0 if fy > 1 else fy)
-    h00 = float(heightmap[row0][col0])
-    h10 = float(heightmap[row0][col1])
-    h01 = float(heightmap[row1][col0])
-    h11 = float(heightmap[row1][col1])
-    top = h00 + (h10 - h00) * fx
-    bot = h01 + (h11 - h01) * fx
-    scaled_h = top + (bot - top) * fy
+    scaled_h = float(heightmap[row][col])
     return {
         "found": True,
         "z": float(oz) + scaled_h,
-        "cell": (col0, row0),
+        "cell": (col, row),
         "scaled_height_units": scaled_h,
-        "interpolated": True,
         "sidecar_path": sidecar_path,
     }
 
