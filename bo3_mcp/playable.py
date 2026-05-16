@@ -443,7 +443,11 @@ def make_terrain_zombie_arena(
             # stock mp_sector mesh) is properly bare for a clear read.
             "patch_visual_texture": "t7_mud_ground_dirt_wet_01",
             "blend_texture": "t7_grass_lawn_medium_small_green_vibrant_blend",
-            "blend_coverage": 0.5,
+            # ~1/3 of the arena is "grass-patch zones"; the rest stays
+            # bare mud. Grass clusters into these zones and the
+            # grass-floor is painted under it → distinct patches, not a
+            # uniform field.
+            "blend_coverage": 0.33,
         },
         "indoor_subtle": {
             # No broken_floor mask — a continuous gently-settled surface,
@@ -600,9 +604,16 @@ def make_terrain_zombie_arena(
         patch_chunk_size=patch_chunk_size,
         patch_visual_texture=patch_visual_texture,
         patch_min_z_offset=patch_min_z_offset,
+        # v23.19: generate + persist the grassiness mask but DEFER the
+        # overlay. The mask CLUSTERS the grass scatter into patches
+        # (mask_min_alpha gate); the grass-floor is then painted tightly
+        # UNDER those clustered grass positions afterwards. Net: distinct
+        # lush grass patches (floor+blades) on bare dirt — not a uniform
+        # grass field and not an unrelated floor-wide noise wash.
         terrain_blend_texture=terrain_blend_texture,
         blend_coverage=blend_coverage,
-        blend_seed=terrain_seed + 99,   # deterministic; shared with scatter
+        blend_seed=terrain_seed + 99,
+        defer_blend_overlay=True,
     )
     summary["steps"].append({
         "terrain_brushes": terrain_result.get("brushes_added"),
@@ -699,6 +710,7 @@ def make_terrain_zombie_arena(
         placed_total = 0
         rejected_total = 0
         cats = list(scatter_categories)
+        grass_positions: list[tuple[float, float]] = []
         if "grass" in cats:
             g = scatter.scatter_props(
                 map_name,
@@ -707,15 +719,16 @@ def make_terrain_zombie_arena(
                 spacing=44.0,                 # tight grid = dense ground cover
                 density=max(scatter_density, 0.85),
                 exclusions=exclusions, edge_margin=56.0,
-                # Gate grass to the grass-FLOOR: only place where the
-                # shared blend mask alpha ≥ 96 (no-op if no blend mask,
-                # e.g. indoor_subtle). Grass clumps then grow on the
-                # grass texture, bare mud stays bald.
+                # Cluster grass into the mask-positive patches (≥96).
+                # Grass is dense WITHIN a patch but absent between
+                # patches, so bare dirt stays visible. The grass-FLOOR
+                # is then painted tightly under these exact positions.
                 mask_min_alpha=96,
                 seed=base_seed,
             )
             placed_total += g["placed"]
             rejected_total += g["rejected_exclusion"]
+            grass_positions = g.get("positions", [])
         debris_cats = tuple(c for c in cats if c != "grass")
         if debris_cats:
             d = scatter.scatter_props(
@@ -735,6 +748,29 @@ def make_terrain_zombie_arena(
             "scatter_categories": cats,
             "scatter_passes": "grass(dense)+debris(sparse)",
         })
+        # ── 10c. Paint the grass-FLOOR blend EXACTLY under the grass
+        # scatter. Derived from the props' real positions (v23.19), so
+        # the floor can't drift from the grass like the old independent
+        # mask did. Only when the preset defines a blend texture
+        # (outdoor_rugged) and grass actually scattered.
+        if terrain_blend_texture and grass_positions:
+            # Tight halo: grass spacing inside a cluster is ~44u, so
+            # radius+feather ≈ 56u keeps the floor contiguous WITHIN a
+            # cluster while barely bleeding past it — distinct grass
+            # patches with real bare dirt between them. (72+56=128u
+            # reach bled to 71% of the map; 32+24 keeps it patchy.)
+            blend_res = terrain.paint_terrain_blend_overlay(
+                map_name, grass_positions,
+                blend_texture=terrain_blend_texture,
+                radius=32.0, feather=24.0,
+                patch_chunk_size=patch_chunk_size,
+            )
+            summary["steps"].append({
+                "grass_floor_blend": blend_res["overlay_chunks"],
+                "blend_under_points": blend_res["points"],
+                "blend_grassy_cells": blend_res["grassy_cells"],
+                "blend_total_cells": blend_res["total_cells"],
+            })
 
     # ── 11. Vault: 2 interior spawners + light + mystery box + PaP + switch.
     zm.furnish_zone(

@@ -677,6 +677,11 @@ def generate_terrain_diffusion(
     terrain_blend_texture: str | None = None,
     blend_coverage: float = 0.5,
     blend_seed: int | None = None,
+    # When True, still generate + persist the grassiness mask (so the
+    # scatter pass can cluster grass into mask-positive patches) but do
+    # NOT emit the blend overlay here — the caller paints it under the
+    # actual scatter positions afterwards. See playable.py v23.19.
+    defer_blend_overlay: bool = False,
 ) -> dict:
     """Generate BO3 terrain using xandergos/terrain-diffusion as the heightmap
     source. Hits the REST API, converts meters → BO3 inches, places brushes.
@@ -965,17 +970,28 @@ def generate_terrain_diffusion(
                     s = t * t * (3.0 - 2.0 * t)  # smoothstep
                     arow.append(int(round(s * 255)))
                 blend_alpha_grid.append(arow)
-            overlay_bodies = _patches.heightmap_to_blend_overlay(
-                padded, blend_alpha_grid,
-                origin=origin, cell_size=cell_size,
-                chunk_size=patch_chunk_size,
-                blend_texture=terrain_blend_texture,
-                z_lift=1.0,
-            )
+            # v23.19: when deferred, the mask is generated + persisted
+            # to the sidecar (so the scatter pass can CLUSTER grass into
+            # the mask-positive patches) but the overlay is NOT emitted
+            # here — the recipe paints it tightly under the actual grass
+            # positions afterwards (paint_terrain_blend_overlay). This
+            # gives distinct grass patches (floor+blades together) on
+            # bare dirt, instead of a floor-wide independent field.
+            if defer_blend_overlay:
+                overlay_bodies = []
+            else:
+                overlay_bodies = _patches.heightmap_to_blend_overlay(
+                    padded, blend_alpha_grid,
+                    origin=origin, cell_size=cell_size,
+                    chunk_size=patch_chunk_size,
+                    blend_texture=terrain_blend_texture,
+                    z_lift=1.0,
+                )
             patch_bodies = list(patch_bodies) + overlay_bodies
             preprocessing_applied["terrain_blend"] = {
                 "blend_texture": terrain_blend_texture,
                 "base_texture": patch_visual_texture,
+                "deferred": defer_blend_overlay,
                 "coverage": cov,
                 "overlay_chunks": len(overlay_bodies),
                 "mask_seed": _bseed,
@@ -1331,6 +1347,96 @@ def place_perks_on_terrain(
             "terrain_found": h["found"],
         })
     return {"placed": placed, "count": len(placed)}
+
+
+def paint_terrain_blend_overlay(
+    map_name: str,
+    points: Sequence[tuple[float, float]],
+    *,
+    blend_texture: str = "t7_grass_lawn_medium_small_green_vibrant_blend",
+    radius: float = 80.0,
+    feather: float = 48.0,
+    patch_chunk_size: int = 8,
+    z_lift: float = 1.0,
+) -> dict:
+    """Paint a grass-floor blend overlay EXACTLY under scatter points.
+
+    v23.19: the grass-floor is DERIVED from where grass actually
+    scattered, not an independent mask. For each (x, y) in `points`
+    (typically the grass-scatter pass's returned positions), stamp a
+    soft alpha disc into a grid the shape of the terrain patch CPs:
+    255 within `radius`, feathering to 0 over `feather` more units,
+    max-combined where discs overlap. Then emit the blend overlay
+    meshes (same chunking as the base terrain) so the grass-floor sits
+    precisely under the grass props and bare base shows everywhere
+    else. Reads the terrain sidecar for grid geometry.
+
+    Run AFTER generate_terrain_diffusion (patch_mesh, NO
+    terrain_blend_texture so it didn't emit its own overlay) and AFTER
+    the grass scatter pass. Appends overlay brushes to worldspawn.
+    """
+    import json
+    from . import patches as _patches
+
+    sc_path = _terrain_sidecar_path(map_name)
+    with open(sc_path, "r", encoding="utf-8") as f:
+        sc = json.load(f)
+    scaled = sc["scaled_heightmap"]
+    ox, oy, oz = sc["origin"]
+    cs = float(sc["cell_size"])
+
+    # Rebuild the SAME padded grid generate_terrain_diffusion's
+    # patch_mesh path used (replicate last row + col) so the overlay
+    # chunking/CPs line up with the base meshes exactly.
+    padded = [list(row) + [row[-1]] for row in scaled]
+    padded.append(list(padded[-1]))
+    pyc = len(padded)
+    pxc = len(padded[0])
+
+    rad2 = radius * radius
+    outer = radius + max(1.0, feather)
+    outer2 = outer * outer
+    alpha = [[0] * pxc for _ in range(pyc)]
+    for (px, py) in points:
+        # Grid bbox the disc can touch (skip the whole-grid scan).
+        gx0 = max(0, int((px - outer - ox) / cs) - 1)
+        gx1 = min(pxc - 1, int((px + outer - ox) / cs) + 1)
+        gy0 = max(0, int((py - outer - oy) / cs) - 1)
+        gy1 = min(pyc - 1, int((py + outer - oy) / cs) + 1)
+        for yi in range(gy0, gy1 + 1):
+            wy = oy + yi * cs
+            for xi in range(gx0, gx1 + 1):
+                wx = ox + xi * cs
+                d2 = (wx - px) ** 2 + (wy - py) ** 2
+                if d2 >= outer2:
+                    continue
+                if d2 <= rad2:
+                    a = 255
+                else:
+                    d = d2 ** 0.5
+                    t = 1.0 - (d - radius) / max(1.0, feather)  # 1→0
+                    a = int(round(255 * max(0.0, min(1.0, t))))
+                if a > alpha[yi][xi]:
+                    alpha[yi][xi] = a
+
+    overlay = _patches.heightmap_to_blend_overlay(
+        padded, alpha,
+        origin=(ox, oy, oz), cell_size=cs,
+        chunk_size=patch_chunk_size,
+        blend_texture=blend_texture, z_lift=z_lift,
+    )
+    mf, ws = geometry._load_top(map_name)
+    for body in overlay:
+        ws.brushes.append(body)
+    geometry._save_top(mf, map_name)
+    grassy_cells = sum(1 for row in alpha for v in row if v > 0)
+    return {
+        "overlay_chunks": len(overlay),
+        "points": len(points),
+        "grassy_cells": grassy_cells,
+        "total_cells": pyc * pxc,
+        "blend_texture": blend_texture,
+    }
 
 
 def start_terrain_diffusion_server(

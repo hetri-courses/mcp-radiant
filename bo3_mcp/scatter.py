@@ -249,6 +249,7 @@ def scatter_props(
     candidates = 0
     rejected = 0
     models_used: dict[str, int] = {}
+    placed_positions: list[tuple[float, float]] = []
 
     y = min_y
     while y < max_y:
@@ -274,6 +275,7 @@ def scatter_props(
                         kvps=_misc_model_kvps(model, scale),
                     )
                     placed += 1
+                    placed_positions.append((float(jx), float(jy)))
                     models_used[model] = models_used.get(model, 0) + 1
                 elif _excluded(jx, jy):
                     rejected += 1
@@ -288,4 +290,8 @@ def scatter_props(
         "categories": list(categories),
         "models_used": models_used,
         "footprint": [[min_x, min_y], [max_x, max_y]],
+        # v23.19: exact XY of every placed prop. The terrain recipe
+        # uses the grass pass's positions to paint a grass-floor blend
+        # halo EXACTLY under the scatter (not an independent mask).
+        "positions": placed_positions,
     }
