@@ -1466,23 +1466,51 @@ def generate_canyon_walls(
         return [a0 + step * i for i in range(n)]
 
     def _door_ribbon(a0, a1, gap):
-        """Full-side along-sample list. For a door side, build a clean
-        CHAMFER each side of the opening: clear any uniform samples in
-        the (edge±chamfer) band and inject exactly [lo-ch, lo, hi,
-        hi+ch]. The lo↔lo-ch (and hi↔hi+ch) columns differ in bottom Z
-        (lintel vs base), so each is ONE wide quad — a rock funnel into
-        the door, NOT a 2u sliver (slivers texture-streak: a 2u face
-        only shows a 2u-wide strip of rock blown up the whole height).
-        Uniform samples inside (lo,hi) are kept (crag on the rock above
-        the door). Preserves the a0→a1 sweep (col order sets normal)."""
+        """Full-side along-sample list. For a door side, FINELY resample
+        the chamfer bands (≈ch/7 spacing) so the jamb is a smooth curved
+        cave-mouth, not one flat 45° quad and not a 2u sliver. Uniform
+        samples inside (lo,hi) are kept (crag on the rock above the
+        door). Preserves the a0→a1 sweep (col order sets normal)."""
         pts = list(_samples(a0, a1))
         if gap:
             lo, hi = min(gap), max(gap)
             ch = door_chamfer
             pts = [p for p in pts
                    if not (lo - ch < p < lo) and not (hi < p < hi + ch)]
+            step = max(6.0, ch / 7.0)
+            k = 1
+            while step * k < ch:
+                pts += [lo - step * k, hi + step * k]
+                k += 1
             pts += [lo - ch, lo, hi, hi + ch]
         return sorted({round(p, 3) for p in pts}, reverse=(a0 > a1))
+
+    def _ease_jamb(s: float) -> float:
+        """0 for s≤0.6, smoothstep→1 over [0.6,1]. Keeps the rock
+        full-height (to the FLOOR) across the outer chamfer, then rises
+        ~vertically into the lintel right at the opening edge — a
+        curved cave-mouth with a near-vertical jamb, no flat 45° facet."""
+        if s <= 0.6:
+            return 0.0
+        u = (s - 0.6) / 0.4
+        if u >= 1.0:
+            return 1.0
+        return u * u * (3.0 - 2.0 * u)
+
+    def _zbottom(p: float, gap) -> float:
+        if not gap:
+            return base_z
+        lo, hi = min(gap), max(gap)
+        ch = door_chamfer
+        if lo <= p <= hi:                         # opening span: arch
+            return door_lintel_z
+        if lo - ch < p < lo:                      # left chamfer jamb
+            s = (p - (lo - ch)) / ch
+            return base_z + (door_lintel_z - base_z) * _ease_jamb(s)
+        if hi < p < hi + ch:                      # right chamfer jamb
+            s = ((hi + ch) - p) / ch
+            return base_z + (door_lintel_z - base_z) * _ease_jamb(s)
+        return base_z
 
     mf, ws = geometry._load_top(map_name)
     meshes_added = 0
@@ -1502,14 +1530,12 @@ def generate_canyon_walls(
         C = len(seg)
         if C < 2:
             continue
-        d_lo, d_hi = (min(gap), max(gap)) if gap else (None, None)
         # per-column bottom Z: lintel inside the opening (rock arches
-        # over the door), full-height base_z everywhere else
-        zbot = [
-            (door_lintel_z if (d_lo is not None and d_lo <= p <= d_hi)
-             else base_z)
-            for p in seg
-        ]
+        # over the door); an EASED jamb across the chamfer (rock stays
+        # full-height to the floor for the outer chamfer, then rises
+        # ~vertically into the lintel at the opening — no flat 45°
+        # facet, no 2u sliver); base_z everywhere else.
+        zbot = [_zbottom(p, gap) for p in seg]
         S = seed + sidx * 1009
         big = value_noise_heightmap(C, rows, scale=0.10, octaves=4, seed=S)
         fine = value_noise_heightmap(C, rows, scale=0.55, octaves=3,
