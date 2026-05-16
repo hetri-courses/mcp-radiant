@@ -105,6 +105,7 @@ def mesh_block(
     tess_t2: int = 8,
     auto_orient: bool = True,
     vertex_alpha: Sequence[Sequence[int]] | None = None,
+    uv_override: Sequence[Sequence[tuple[float, float]]] | None = None,
 ) -> str:
     """Emit a single `mesh` brush body (renderable triangulated patch).
 
@@ -172,6 +173,12 @@ def mesh_block(
             f"mesh requires at least 2x2 control points; got {rows}x{cols}"
         )
 
+    if uv_override is not None and auto_orient:
+        # _orient_up would reorder `work` but not uv_override → misaligned
+        # UVs. Vertical walls pass explicit CPs with auto_orient=False, so
+        # this is only a guard against misuse.
+        raise ValueError("uv_override requires auto_orient=False")
+
     has_alpha = vertex_alpha is not None
     if has_alpha:
         if len(vertex_alpha) != rows or any(
@@ -212,8 +219,11 @@ def mesh_block(
             x, y, z = cp[0], cp[1], cp[2]
             # World-projected UV: matches Treyarch convention where U
             # tracks world-X and V tracks world-Y, with V negated.
-            u = x * uv_scale
-            v = -y * uv_scale
+            if uv_override is not None:
+                u, v = uv_override[r][c]
+            else:
+                u = x * uv_scale
+                v = -y * uv_scale
             # Lightmap UV: monotonic across rows / columns.
             lu = (r + 1) * lightmap_scale
             lv = (c + 1) * lightmap_scale

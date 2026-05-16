@@ -1385,6 +1385,151 @@ def place_perks_on_terrain(
     return {"placed": placed, "count": len(placed)}
 
 
+def generate_canyon_walls(
+    map_name: str,
+    *,
+    interior_mins: tuple[float, float],
+    interior_maxs: tuple[float, float],
+    base_z: float = 8.0,
+    wall_height: float = 224.0,
+    crest_amp: float = 64.0,
+    face_amp: float = 22.0,
+    along_step: float = 48.0,
+    v_rows: int = 6,
+    door_gaps: dict[str, tuple[float, float]] | None = None,
+    texture: str = "t7_dirt_grassy_forest_ground",
+    uv_scale: float = 8.0,
+    seed: int = 1337,
+) -> dict:
+    """Procedural canyon/quarry perimeter walls as VERTICAL patch meshes
+    just inside the arena's 4 box-brush walls.
+
+    Each side = a vertical CP ribbon: row index → up (+Z), col index →
+    along the wall, with the col direction chosen per side so the patch
+    normal (rowdir × coldir) faces INTO the play area. Value noise gives
+    a jagged crest height + a mild inward rocky displacement of the face
+    (scaled ×t so it's 0 at the base → the wall foot meets the floor
+    with no lip). A duplicate mesh with `weaponClip detail` is the
+    collision twin (same convention as the floor).
+
+    This is a VISIBLE + SOLID inner skin. The 16u box wall + sky/umbra
+    shell BEHIND it are left intact — NOT a replacement for the seal
+    (the void-bug seal is load-bearing; don't touch it).
+
+    interior_mins/maxs: (x, y) of the arena INTERIOR (inside face of the
+        box walls). door_gaps: {"west": (y_lo, y_hi), "east": (y_lo,
+        y_hi)} — along-axis world spans left open for the doorways.
+    """
+    from . import patches as _patches
+
+    xmin, ymin = float(interior_mins[0]), float(interior_mins[1])
+    xmax, ymax = float(interior_maxs[0]), float(interior_maxs[1])
+    door_gaps = door_gaps or {}
+    rows = max(2, int(v_rows))
+
+    # row → +Z (up) for all sides; col walks "along" in the direction
+    # that makes normal = rowdir × coldir point INWARD:
+    #   south(y=ymin): col +X → +Z×+X=+Y   north(y=ymax): col -X → -Y
+    #   west (x=xmin): col -Y → +Z×-Y=+X   east (x=xmax): col +Y → -X
+    side_list = [
+        ("south", "x", ymin, xmin, xmax, (0.0, 1.0), None),
+        ("north", "x", ymax, xmax, xmin, (0.0, -1.0), None),
+        ("west", "y", xmin, ymax, ymin, (1.0, 0.0), "west"),
+        ("east", "y", xmax, ymin, ymax, (-1.0, 0.0), "east"),
+    ]
+
+    def _samples(a0: float, a1: float) -> list[float]:
+        n = max(2, int(round(abs(a1 - a0) / along_step)) + 1)
+        step = (a1 - a0) / (n - 1)
+        return [a0 + step * i for i in range(n)]
+
+    def _segments(pts, gap):
+        if not gap:
+            return [pts]
+        lo, hi = min(gap), max(gap)
+        segs, cur = [], []
+        for p in pts:
+            if lo <= p <= hi:
+                if len(cur) >= 2:
+                    segs.append(cur)
+                cur = []
+            else:
+                cur.append(p)
+        if len(cur) >= 2:
+            segs.append(cur)
+        return segs
+
+    mf, ws = geometry._load_top(map_name)
+    meshes_added = 0
+    per_side: dict[str, int] = {}
+
+    for sidx, (side, axis, const, a0, a1, inward, gapkey) in enumerate(side_list):
+        pts = _samples(a0, a1)
+        gap = door_gaps.get(gapkey) if gapkey else None
+        segs = _segments(pts, gap)
+        seg_meshes = 0
+        for si, seg in enumerate(segs):
+            C = len(seg)
+            if C < 2:
+                continue
+            # deterministic per side+segment seed (no str hash())
+            nz = value_noise_heightmap(
+                C, rows, scale=0.22, octaves=4,
+                seed=seed + sidx * 1009 + si * 101,
+            )  # nz[r][c] ~ [0,1]
+            along_cum = [0.0]
+            for c in range(1, C):
+                along_cum.append(along_cum[-1] + abs(seg[c] - seg[c - 1]))
+            cps: list[list[tuple[float, float, float]]] = []
+            uvs: list[list[tuple[float, float]]] = []
+            for r in range(rows):
+                t = r / (rows - 1)              # 0 = base, 1 = crest
+                crow: list[tuple[float, float, float]] = []
+                urow: list[tuple[float, float]] = []
+                for c in range(C):
+                    crest = (base_z + wall_height
+                             + crest_amp * (nz[0][c] - 0.5) * 2.0)
+                    z = base_z + (crest - base_z) * t
+                    d = face_amp * nz[r][c] * t   # inward, 0 at the foot
+                    if axis == "x":               # col walks X, const=Y
+                        x = seg[c] + inward[0] * d
+                        y = const + inward[1] * d
+                    else:                          # col walks Y, const=X
+                        x = const + inward[0] * d
+                        y = seg[c] + inward[1] * d
+                    crow.append((x, y, z))
+                    urow.append((along_cum[c] * uv_scale, z * uv_scale))
+                cps.append(crow)
+                uvs.append(urow)
+            visual = _patches.mesh_block(
+                cps, texture=texture, contents=None,
+                auto_orient=False, uv_override=uvs,
+            )
+            collision = _patches.mesh_block(
+                cps, texture=texture,
+                contents=_patches.FLOOR_COLLISION_CONTENTS,
+                auto_orient=False, uv_override=uvs,
+            )
+            ws.brushes.append(visual)
+            ws.brushes.append(collision)
+            meshes_added += 2
+            seg_meshes += 2
+        per_side[side] = seg_meshes
+
+    geometry._save_top(mf, map_name)
+    return {
+        "meshes_added": meshes_added,
+        "per_side": per_side,
+        "interior_mins": [xmin, ymin],
+        "interior_maxs": [xmax, ymax],
+        "wall_height": wall_height,
+        "crest_amp": crest_amp,
+        "face_amp": face_amp,
+        "rows": rows,
+        "texture": texture,
+    }
+
+
 def paint_terrain_blend_overlay(
     map_name: str,
     points: Sequence[tuple[float, float]],

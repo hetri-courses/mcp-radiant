@@ -466,7 +466,21 @@ def make_terrain_zombie_arena(
             "smooth_iterations": 3,
             "patch_visual_texture": "t7_concrete_tiles_2x2_dirty_01",
         },
+        "outdoor_canyon": {
+            # == outdoor_rugged terrain + procedural canyon perimeter
+            # walls (vertical rock cliffs inside the box walls; the box
+            # wall + sky/umbra seal stay intact behind them). v23.24 —
+            # opt-in, lab-verified in zm_wall_lab before any default use.
+            "terrain_style": "broken_floor",
+            "broken_floor_coverage": 0.25,
+            "relief_units": 40.0,
+            "edge_feather_units": 96.0,
+            "smooth_iterations": 1,
+            "patch_visual_texture": "t7_dirt_grassy_forest_ground",
+            "canyon_walls": True,
+        },
     }
+    canyon_walls = False  # opt-in via the outdoor_canyon preset
     if terrain_preset != "none":
         if terrain_preset not in _PRESETS:
             raise ValueError(
@@ -481,6 +495,7 @@ def make_terrain_zombie_arena(
         edge_feather_units = _p.get("edge_feather_units", edge_feather_units)
         smooth_iterations = _p.get("smooth_iterations", smooth_iterations)
         patch_visual_texture = _p.get("patch_visual_texture", patch_visual_texture)
+        canyon_walls = bool(_p.get("canyon_walls", canyon_walls))
 
     summary: dict[str, Any] = {
         "name": map_name, "layout": "terrain_arena",
@@ -600,6 +615,26 @@ def make_terrain_zombie_arena(
         "elev_range_m": terrain_result["model_meta"].get("elev_range_m"),
         "sidecar": terrain_result.get("terrain_sidecar"),
     })
+
+    # ── 7b. (opt-in) Procedural canyon perimeter walls. Vertical rock
+    # cliffs just inside the arena box walls; the 16u box wall + sky/
+    # umbra shell BEHIND them stay intact (load-bearing seal — NOT
+    # touched). Arena interior = x[-112..752] y[-496..496]; west+east
+    # doorways (y∈[-40,40]) get a ±72 gap so the buyable doors stay
+    # clear. base_z below the floor so the wall foot is buried (no lip).
+    if canyon_walls:
+        canyon = terrain.generate_canyon_walls(
+            map_name,
+            interior_mins=(-112.0, -496.0),
+            interior_maxs=(752.0, 496.0),
+            base_z=floor_thickness_units - 8.0,
+            door_gaps={"west": (-72.0, 72.0), "east": (-72.0, 72.0)},
+            seed=(terrain_seed or 42),
+        )
+        summary["steps"].append({
+            "canyon_walls_meshes": canyon["meshes_added"],
+            "canyon_per_side": canyon["per_side"],
+        })
 
     # ── 8. Place arena spawners ON the terrain surface (auto-Z).
     spawner_world_positions = [

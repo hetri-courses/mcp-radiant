@@ -45,6 +45,7 @@ def _reload_mcp_modules() -> dict:
         "bo3_mcp.textures",     # catalog, no internal deps
         "bo3_mcp.entities",     # depends on mapfile
         "bo3_mcp.gsc",          # depends on stdlib only
+        "bo3_mcp.patches",      # mesh/curve primitives, depends on mapfile
         "bo3_mcp.geometry",     # depends on brushes, mapfile, paths, entities
         "bo3_mcp.terrain",      # depends on brushes, geometry, mapfile, paths
         "bo3_mcp.scatter",      # depends on terrain (sidecar Z), entities, mapfile, paths
