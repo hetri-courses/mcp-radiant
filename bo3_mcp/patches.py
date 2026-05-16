@@ -104,6 +104,7 @@ def mesh_block(
     tess_t1: int = 0,
     tess_t2: int = 8,
     auto_orient: bool = True,
+    vertex_alpha: Sequence[Sequence[int]] | None = None,
 ) -> str:
     """Emit a single `mesh` brush body (renderable triangulated patch).
 
@@ -144,6 +145,16 @@ def mesh_block(
             +Z-facing surface normals (visible from above). Set False
             ONLY when you specifically need downward-facing normals
             (e.g., a ceiling patch).
+        vertex_alpha: optional `alpha[r][c]` grid (0-255, same shape as
+            control_points) for terrain TEXTURE BLENDING. When this mesh
+            uses a `*_blend` material, the per-vertex alpha is the blend
+            weight: 255 = full overlay (e.g. grass), 0 = base shows
+            through (e.g. dirt). Emitted as `c 255 255 255 <a>` per
+            vertex; verts with alpha 0 omit the `c` token entirely
+            (matches stock mp_combine_terrain_north convention). This is
+            how "grass floor under the grass, dirt elsewhere" works:
+            stack a grass-blend mesh on the dirt base with alpha driven
+            by a grassiness mask.
 
     Returns: brush body text suitable for appending to `Entity.brushes`.
     """
@@ -161,11 +172,30 @@ def mesh_block(
             f"mesh requires at least 2x2 control points; got {rows}x{cols}"
         )
 
+    has_alpha = vertex_alpha is not None
+    if has_alpha:
+        if len(vertex_alpha) != rows or any(
+            len(vertex_alpha[r]) != cols for r in range(rows)
+        ):
+            raise ValueError(
+                f"vertex_alpha shape must match control_points "
+                f"({rows}x{cols})"
+            )
+        # Fuse alpha into the CP tuples so _orient_up reorders both in
+        # lockstep (_orient_up only reads [0]/[1], tuple length is free).
+        work = [
+            [(control_points[r][c][0], control_points[r][c][1],
+              control_points[r][c][2], int(vertex_alpha[r][c]))
+             for c in range(cols)]
+            for r in range(rows)
+        ]
+    else:
+        work = control_points
+
     if auto_orient:
-        control_points = _orient_up(control_points)
-        # auto-orient may have transposed, refresh dims
-        rows = len(control_points)
-        cols = len(control_points[0])
+        work = _orient_up(work)
+        rows = len(work)
+        cols = len(work[0])
 
     lines: list[str] = ["{\n", f' guid "{mapfile.new_guid()}"\n', "  mesh\n", "  {\n"]
     if contents:
@@ -178,7 +208,8 @@ def mesh_block(
     for r in range(rows):
         lines.append("   (\n")
         for c in range(cols):
-            x, y, z = control_points[r][c]
+            cp = work[r][c]
+            x, y, z = cp[0], cp[1], cp[2]
             # World-projected UV: matches Treyarch convention where U
             # tracks world-X and V tracks world-Y, with V negated.
             u = x * uv_scale
@@ -186,8 +217,18 @@ def mesh_block(
             # Lightmap UV: monotonic across rows / columns.
             lu = (r + 1) * lightmap_scale
             lv = (c + 1) * lightmap_scale
+            # Per-vertex blend color. Stock convention
+            # (mp_combine_terrain_north): `c 255 255 255 <alpha>`
+            # between Z and the `t` token; alpha 0 → omit `c` entirely
+            # (base material fully shows through).
+            if has_alpha and cp[3] > 0:
+                a = max(0, min(255, int(cp[3])))
+                ctok = f"c 255 255 255 {a} "
+            else:
+                ctok = ""
             lines.append(
-                f"\tv {_g(x)} {_g(y)} {_g(z)} t {_g(u)} {_g(v)} {_g(lu)} {_g(lv)}\n"
+                f"\tv {_g(x)} {_g(y)} {_g(z)} {ctok}t "
+                f"{_g(u)} {_g(v)} {_g(lu)} {_g(lv)}\n"
             )
         lines.append("   )\n")
 
