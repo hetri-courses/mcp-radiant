@@ -633,7 +633,12 @@ def make_terrain_zombie_arena(
             interior_maxs=(752.0, 496.0),
             base_z=floor_thickness_units - 8.0,
             ceiling_z=384.0,
-            door_gaps={"west": (-64.0, 64.0), "east": (-64.0, 64.0)},
+            # Door openings are y∈[-40,40], z∈[16,112]. ±44 = 4u
+            # clearance each side (rock hugs the opening, doesn't clip
+            # the door model); lintel 110 (just under the 112 opening
+            # top) so rock arches OVER the door with no gray strip.
+            door_gaps={"west": (-44.0, 44.0), "east": (-44.0, 44.0)},
+            door_lintel_z=110.0,
             seed=(terrain_seed or 42),
         )
         summary["steps"].append({

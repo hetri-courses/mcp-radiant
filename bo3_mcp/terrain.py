@@ -1399,6 +1399,7 @@ def generate_canyon_walls(
     v_rows: int = 14,
     edge_cols: float = 1.5,
     door_gaps: dict[str, tuple[float, float]] | None = None,
+    door_lintel_z: float = 110.0,
     texture: str = "t7_concrete_pebbles_cracked",
     uv_scale: float = 8.0,
     seed: int = 1337,
@@ -1463,88 +1464,91 @@ def generate_canyon_walls(
         step = (a1 - a0) / (n - 1)
         return [a0 + step * i for i in range(n)]
 
-    def _segments(pts, gap):
-        if not gap:
-            return [pts]
-        lo, hi = min(gap), max(gap)
-        segs, cur = [], []
-        for p in pts:
-            if lo <= p <= hi:
-                if len(cur) >= 2:
-                    segs.append(cur)
-                cur = []
-            else:
-                cur.append(p)
-        if len(cur) >= 2:
-            segs.append(cur)
-        return segs
+    def _door_ribbon(a0, a1, gap):
+        """Full-side along-sample list. For a door side, inject crisp
+        jamb columns — the opening edges and a point ~2u OUTSIDE each —
+        so the doorway side is a near-vertical rock jamb, not a wide
+        diagonal. Preserves the a0→a1 sweep direction (col order sets
+        the patch normal)."""
+        pts = list(_samples(a0, a1))
+        if gap:
+            lo, hi = min(gap), max(gap)
+            pts += [lo - 2.0, lo, hi, hi + 2.0]
+        return sorted({round(p, 3) for p in pts}, reverse=(a0 > a1))
 
     mf, ws = geometry._load_top(map_name)
     meshes_added = 0
     per_side: dict[str, int] = {}
 
+    # v23.26 (zm_wall_lab v23.25 playtest — "walls good, but the door
+    # cuts the wall full-height; it must go ABOVE the door and hug the
+    # opening edges"). ROOT CAUSE: the old _segments split removed rock
+    # for the ENTIRE height across a gap WIDER than the opening → a
+    # full-height gray slot. FIX: one continuous ribbon per side; inside
+    # the opening span the column bottom is the LINTEL (door top), so
+    # rock ARCHES over the door, and injected jamb columns hug the
+    # opening edges. Opening (y∈door_gap, z∈[floor, lintel]) stays clear.
     for sidx, (side, axis, const, a0, a1, inward, gapkey) in enumerate(side_list):
-        pts = _samples(a0, a1)
-        gap = door_gaps.get(gapkey) if gapkey else None
-        segs = _segments(pts, gap)
-        seg_meshes = 0
-        for si, seg in enumerate(segs):
-            C = len(seg)
-            if C < 2:
-                continue
-            # deterministic per side+segment seeds (no str hash()).
-            # Two-scale value noise: broad form + fine crag detail.
-            S = seed + sidx * 1009 + si * 101
-            big = value_noise_heightmap(C, rows, scale=0.10,
-                                        octaves=4, seed=S)
-            fine = value_noise_heightmap(C, rows, scale=0.55,
-                                         octaves=3, seed=S + 7)
-            along_cum = [0.0]
-            for c in range(1, C):
-                along_cum.append(along_cum[-1] + abs(seg[c] - seg[c - 1]))
-            cps: list[list[tuple[float, float, float]]] = []
-            uvs: list[list[tuple[float, float]]] = []
-            for r in range(rows):
-                t = r / (rows - 1)             # 0 = foot, 1 = crown
-                z = base_z + (crest_z - base_z) * t
-                w = math.sin(math.pi * t)      # 0 foot & crown, 1 mid
-                crow: list[tuple[float, float, float]] = []
-                urow: list[tuple[float, float]] = []
-                for c in range(C):
-                    # taper to flush over the outer edge_cols columns so
-                    # segment ends (doorway sides, corners) meet the box
-                    # wall with no see-through slot
-                    ce = min(c, C - 1 - c) / edge_cols
-                    if ce > 1.0:
-                        ce = 1.0
-                    dn = (big[r][c] * (1.0 - detail_frac)
-                          + fine[r][c] * detail_frac)
-                    # inward bulge; 0 at foot, crown, and segment ends
-                    d = face_amp * dn * w * ce
-                    if axis == "x":               # col walks X, const=Y
-                        x = seg[c] + inward[0] * d
-                        y = const + inward[1] * d
-                    else:                          # col walks Y, const=X
-                        x = const + inward[0] * d
-                        y = seg[c] + inward[1] * d
-                    crow.append((x, y, z))
-                    urow.append((along_cum[c] * uv_scale, z * uv_scale))
-                cps.append(crow)
-                uvs.append(urow)
-            visual = _patches.mesh_block(
-                cps, texture=texture, contents=None,
-                auto_orient=False, uv_override=uvs,
-            )
-            collision = _patches.mesh_block(
-                cps, texture=texture,
-                contents=_patches.FLOOR_COLLISION_CONTENTS,
-                auto_orient=False, uv_override=uvs,
-            )
-            ws.brushes.append(visual)
-            ws.brushes.append(collision)
-            meshes_added += 2
-            seg_meshes += 2
-        per_side[side] = seg_meshes
+        gap = door_gaps.get(gapkey) if (gapkey and door_gaps) else None
+        seg = _door_ribbon(a0, a1, gap)
+        C = len(seg)
+        if C < 2:
+            continue
+        d_lo, d_hi = (min(gap), max(gap)) if gap else (None, None)
+        # per-column bottom Z: lintel inside the opening (rock arches
+        # over the door), full-height base_z everywhere else
+        zbot = [
+            (door_lintel_z if (d_lo is not None and d_lo <= p <= d_hi)
+             else base_z)
+            for p in seg
+        ]
+        S = seed + sidx * 1009
+        big = value_noise_heightmap(C, rows, scale=0.10, octaves=4, seed=S)
+        fine = value_noise_heightmap(C, rows, scale=0.55, octaves=3,
+                                     seed=S + 7)
+        along_cum = [0.0]
+        for c in range(1, C):
+            along_cum.append(along_cum[-1] + abs(seg[c] - seg[c - 1]))
+        cps: list[list[tuple[float, float, float]]] = []
+        uvs: list[list[tuple[float, float]]] = []
+        for r in range(rows):
+            t = r / (rows - 1)                 # 0 = foot, 1 = crown
+            w = math.sin(math.pi * t)          # 0 foot & crown, 1 mid
+            crow: list[tuple[float, float, float]] = []
+            urow: list[tuple[float, float]] = []
+            for c in range(C):
+                zb = zbot[c]                   # lintel over door, else base
+                z = zb + (crest_z - zb) * t
+                # taper to flush only at the two CORNER ends of the side
+                ce = min(c, C - 1 - c) / edge_cols
+                if ce > 1.0:
+                    ce = 1.0
+                dn = (big[r][c] * (1.0 - detail_frac)
+                      + fine[r][c] * detail_frac)
+                d = face_amp * dn * w * ce     # inward bulge
+                if axis == "x":                # col walks X, const=Y
+                    x = seg[c] + inward[0] * d
+                    y = const + inward[1] * d
+                else:                           # col walks Y, const=X
+                    x = const + inward[0] * d
+                    y = seg[c] + inward[1] * d
+                crow.append((x, y, z))
+                urow.append((along_cum[c] * uv_scale, z * uv_scale))
+            cps.append(crow)
+            uvs.append(urow)
+        visual = _patches.mesh_block(
+            cps, texture=texture, contents=None,
+            auto_orient=False, uv_override=uvs,
+        )
+        collision = _patches.mesh_block(
+            cps, texture=texture,
+            contents=_patches.FLOOR_COLLISION_CONTENTS,
+            auto_orient=False, uv_override=uvs,
+        )
+        ws.brushes.append(visual)
+        ws.brushes.append(collision)
+        meshes_added += 2
+        per_side[side] = 2
 
     geometry._save_top(mf, map_name)
     return {
