@@ -705,12 +705,24 @@ def make_terrain_zombie_arena(
         {"weapon": "smg_standard", "origin": (320, -496, 8), "angles": (0, 0, 0)},
         {"weapon": "ar_standard",  "origin": (320, 496, 8),  "angles": (0, 180, 0)},
     ] if include_wall_buys else []
+    # v23.30 SURE-FIRE lighting fix (not a guess): the original z=320
+    # arena lights were sized for the flat z=384 box ceiling. With the
+    # cave ceiling the roof surface at these interior XYs is
+    # edge_z(372) − sag(80)·noise ≈ 300–365 (clamp min_clear_z=236), so
+    # z=320 lights sit AT/ABOVE the opaque roof and illuminate the dead
+    # cavity above it → dark room + dark roof underside. Dropping them
+    # to z=200 is guaranteed BELOW the roof's lowest possible point
+    # (236) by construction → every light is always in the open play
+    # volume (lights floor, walls, roof underside). The vault uses
+    # z=200 with this exact light setup already (proven). No ceiling →
+    # keep z=320 (correct for the flat box ceiling).
+    _alz = 200 if canyon_ceiling else 320
     zm.furnish_zone(
         map_name, "arena_zone",
         wall_buys=arena_wall_buys,
         light_origins=[
-            (100, -240, 320), (100, 240, 320),
-            (540, -240, 320), (540, 240, 320),
+            (100, -240, _alz), (100, 240, _alz),
+            (540, -240, _alz), (540, 240, _alz),
         ],
         light_color=(0.9, 0.95, 1.0), light_radius=480, light_stops=5.0,
     )
