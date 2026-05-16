@@ -1265,6 +1265,78 @@ def place_perks_on_terrain(
     return {"placed": placed, "count": len(placed)}
 
 
+def place_wall_buys_on_terrain(
+    map_name: str,
+    wall_buys: list[dict],
+    *,
+    floor_baseline_z: float = 16.0,
+    sample_toward: tuple[float, float] | None = None,
+    standoff: float = 64.0,
+    fallback_z: float = 16.0,
+) -> dict:
+    """Place wall-buy weapons whose chalk Z tracks the terrain surface.
+
+    Wall buys sit on a WALL, but the player who reads the chalk stands
+    on the terrain a short distance IN FRONT of it. On a flat floor the
+    chalk Z is tuned so the gun outline lands at chest/eye height. When
+    TD terrain raises the walkable surface, a fixed chalk Z ends up well
+    below eye level (v23.11 playtest).
+
+    Critically, sampling terrain exactly AT the wall XY is wrong: the
+    wall sits on the terrain footprint BOUNDARY, which the edge-pad +
+    broken_floor keep near floor level. The player actually stands
+    `standoff` units inward (toward `sample_toward`, typically the room
+    centre) where broken_floor terrain can be much higher. So:
+
+        sample_xy = wall_xy + unit(sample_toward - wall_xy) * standoff
+        lift      = max(0, terrain_top(sample_xy) - floor_baseline_z)
+        chalk_z   = origin.z + lift
+
+    No-op on flat terrain; on raised terrain the chalk rises with the
+    surface the player is standing on, keeping the gun outline at eye
+    level. If `sample_toward` is None, samples at the wall XY (legacy).
+
+    `wall_buys`: list of {"weapon", "origin": (x,y,z), "angles": (...)}
+    — same shape furnish_zone accepts. `floor_baseline_z` is the flat-
+    floor surface Z the original chalk Z was tuned against (default 16).
+
+    Reusable from any terrain recipe; mirrors place_perks_on_terrain.
+    """
+    from . import zm as _zm
+    import math as _math
+
+    placed: list[dict] = []
+    for wb in wall_buys:
+        x, y, z = (float(v) for v in wb["origin"])
+        angles = tuple(wb.get("angles", (0.0, 0.0, 0.0)))
+        if sample_toward is not None:
+            dx = sample_toward[0] - x
+            dy = sample_toward[1] - y
+            d = _math.hypot(dx, dy)
+            if d > 1e-6:
+                sx = x + (dx / d) * standoff
+                sy = y + (dy / d) * standoff
+            else:
+                sx, sy = x, y
+        else:
+            sx, sy = x, y
+        h = terrain_height_at_xy(map_name, sx, sy)
+        terrain_top = h["z"] if h.get("found") else fallback_z
+        lift = max(0.0, terrain_top - floor_baseline_z)
+        chalk_z = z + lift
+        _zm.add_wall_buy(map_name, wb["weapon"], (x, y, chalk_z), angles)
+        placed.append({
+            "weapon": wb["weapon"],
+            "xy": (x, y),
+            "sample_xy": (round(sx, 1), round(sy, 1)),
+            "base_z": z,
+            "lift": round(lift, 1),
+            "chalk_z": round(chalk_z, 1),
+            "terrain_found": h.get("found", False),
+        })
+    return {"placed": placed, "count": len(placed)}
+
+
 def start_terrain_diffusion_server(
     *,
     model: str = "xandergos/terrain-diffusion-30m",

@@ -613,14 +613,32 @@ def make_terrain_zombie_arena(
         )
         summary["steps"].append({"arena_perks_on_terrain": perks_result["count"]})
 
-    # ── 10. Arena wall buys + lights (wall buys on walls, NOT on terrain).
-    arena_wall_buys = [
-        {"weapon": "smg_standard", "origin": (320, -496, 8), "angles": (0, 0, 0)},
-        {"weapon": "ar_standard",  "origin": (320, 496, 8),  "angles": (0, 180, 0)},
-    ] if include_wall_buys else []
+    # ── 10. Arena wall buys + lights. Wall buys go on the WALL, but the
+    # player reading the chalk stands on the TD terrain in front of it.
+    # z=8 is the flat-floor-tuned chalk height; place_wall_buys_on_terrain
+    # lifts each by how much the terrain rose at its XY so the gun
+    # outline stays at eye level (v23.11 playtest: chalk too low on TD).
+    if include_wall_buys:
+        wall_buys_result = terrain.place_wall_buys_on_terrain(
+            map_name,
+            wall_buys=[
+                {"weapon": "smg_standard", "origin": (320, -496, 8), "angles": (0, 0, 0)},
+                {"weapon": "ar_standard",  "origin": (320, 496, 8),  "angles": (0, 180, 0)},
+            ],
+            floor_baseline_z=floor_thickness_units,
+            # Sample terrain where the player STANDS to read the chalk
+            # (a standoff inward toward the arena centre), not at the
+            # near-flat footprint boundary the wall sits on.
+            sample_toward=(320.0, 0.0),
+            standoff=80.0,
+        )
+        summary["steps"].append({
+            "arena_wall_buys_on_terrain": wall_buys_result["count"],
+            "wall_buy_lifts": [round(p["lift"], 1)
+                               for p in wall_buys_result["placed"]],
+        })
     zm.furnish_zone(
         map_name, "arena_zone",
-        wall_buys=arena_wall_buys,
         light_origins=[
             (100, -240, 320), (100, 240, 320),
             (540, -240, 320), (540, 240, 320),
