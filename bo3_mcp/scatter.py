@@ -58,11 +58,15 @@ PROP_CATALOG: dict[str, list[tuple[str, float]]] = {
         ("p7_foliage_grass_tall_cluster_med", 1.0),
         ("p7_eth_foliage_grass_small_wild", 2.0),
     ],
-    # Mid debris — sparser, breaks up the ground texture.
+    # Mid debris — sparser, breaks up the ground texture. ONLY small
+    # chunky props here: they sit on a single point and tolerate bumpy
+    # TD terrain. Flat-lying props (plywood sheets etc.) are excluded
+    # on purpose — a flat board can't conform to undulating terrain and
+    # visibly clips through it (v23.15 playtest). Flat props belong on
+    # a flat preset / leveled pad, not scattered on broken_floor.
     "debris": [
         ("p7_debris_concrete_rubble_sm_02", 2.0),
         ("p7_debris_concrete_rubble_sm_14", 2.0),
-        ("p7_debris_wood_plywood_2x4_flat", 1.0),
     ],
     # Larger set-dressing props — rare, deliberate. These are bigger so
     # keep their weight/density low or they look littered.
@@ -110,8 +114,8 @@ def scatter_props(
     footprint_mins: Point2,
     footprint_maxs: Point2,
     categories: Sequence[str] = ("grass", "debris"),
-    spacing: float = 96.0,
-    density: float = 0.55,
+    spacing: float = 56.0,   # was 96 — denser candidate grid (v23.15 "not enough")
+    density: float = 0.75,   # was 0.55 — more cells actually get a prop
     scale_range: tuple[float, float] = (0.8, 1.4),
     exclusions: Sequence[tuple[float, float, float]] | None = None,
     edge_margin: float = 48.0,

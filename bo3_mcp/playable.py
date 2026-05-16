@@ -432,7 +432,13 @@ def make_terrain_zombie_arena(
             "relief_units": 40.0,          # 16 floor + 40 = max_height 56 (== old default)
             "edge_feather_units": 96.0,
             "smooth_iterations": 1,
-            "patch_visual_texture": "t7_concrete_pebbles_cracked",
+            # Real outdoor dirt+grass ground. Verified: this exact
+            # material is on a `mesh` primitive in stock
+            # mp_sector_terrain_north (Treyarch's own outdoor terrain),
+            # so it's mesh-compatible and in the asset DB. Replaces the
+            # urban t7_concrete_pebbles_cracked which read as "cracked
+            # concrete", not dirt.
+            "patch_visual_texture": "t7_dirt_grassy_forest_ground",
         },
         "indoor_subtle": {
             # No broken_floor mask — a continuous gently-settled surface,
@@ -671,20 +677,44 @@ def make_terrain_zombie_arena(
         for wb in arena_wall_buys:
             wx, wy = wb["origin"][0], wb["origin"][1]
             exclusions.append((float(wx), float(wy), 80.0))
-        scat = scatter.scatter_props(
-            map_name,
-            footprint_mins=(fm[0], fm[1]),
-            footprint_maxs=(fM[0], fM[1]),
-            categories=scatter_categories,
-            density=scatter_density,
-            exclusions=exclusions,
-            edge_margin=56.0,
-            seed=scatter_seed if scatter_seed is not None else terrain_seed,
-        )
+        base_seed = scatter_seed if scatter_seed is not None else terrain_seed
+        # TWO passes for independent control (v23.15 playtest: "not
+        # enough, especially grass"). A single mixed pass ties debris
+        # density to grass density; splitting lets grass be LUSH while
+        # debris stays an occasional accent.
+        placed_total = 0
+        rejected_total = 0
+        cats = list(scatter_categories)
+        if "grass" in cats:
+            g = scatter.scatter_props(
+                map_name,
+                footprint_mins=(fm[0], fm[1]), footprint_maxs=(fM[0], fM[1]),
+                categories=("grass",),
+                spacing=44.0,                 # tight grid = dense ground cover
+                density=max(scatter_density, 0.85),
+                exclusions=exclusions, edge_margin=56.0,
+                seed=base_seed,
+            )
+            placed_total += g["placed"]
+            rejected_total += g["rejected_exclusion"]
+        debris_cats = tuple(c for c in cats if c != "grass")
+        if debris_cats:
+            d = scatter.scatter_props(
+                map_name,
+                footprint_mins=(fm[0], fm[1]), footprint_maxs=(fM[0], fM[1]),
+                categories=debris_cats,
+                spacing=140.0,                # sparse accent
+                density=0.4,
+                exclusions=exclusions, edge_margin=56.0,
+                seed=base_seed + 1,           # decorrelate from grass grid
+            )
+            placed_total += d["placed"]
+            rejected_total += d["rejected_exclusion"]
         summary["steps"].append({
-            "arena_scatter_props": scat["placed"],
-            "scatter_rejected_exclusion": scat["rejected_exclusion"],
-            "scatter_categories": list(scatter_categories),
+            "arena_scatter_props": placed_total,
+            "scatter_rejected_exclusion": rejected_total,
+            "scatter_categories": cats,
+            "scatter_passes": "grass(dense)+debris(sparse)",
         })
 
     # ── 11. Vault: 2 interior spawners + light + mystery box + PaP + switch.
