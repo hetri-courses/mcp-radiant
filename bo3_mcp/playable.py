@@ -404,23 +404,37 @@ def make_terrain_zombie_arena(
     # ── Apply terrain preset bundle. "outdoor_rugged" == the existing
     # defaults (no-op, so existing callers are byte-identical).
     # "indoor_subtle" == settled tile/concrete floor.
+    #
+    # CRITICAL: presets express `relief_units` = how far the terrain
+    # rises ABOVE the floor surface, NOT an absolute max_height. The
+    # pipeline's max_height_units is an ABSOLUTE clamp on scaled-Z, and
+    # scaled-Z already includes the floor_thickness_units baseline
+    # (default 16). So the real clamp is floor_thickness_units +
+    # relief_units. v23.9's first cut set indoor_subtle max_height=8
+    # directly — below the 16 floor — which buried the whole patch
+    # UNDER the room floor brush (patch Z came out 10..18 vs the
+    # working v5's 18..58). Computing from floor_thickness fixes that
+    # and stays correct for any floor thickness.
     _PRESETS = {
         "outdoor_rugged": {
             "terrain_style": "broken_floor",
             "broken_floor_coverage": 0.25,
-            "max_height_units": 56.0,
+            "relief_units": 40.0,          # 16 floor + 40 = max_height 56 (== old default)
             "edge_feather_units": 96.0,
             "smooth_iterations": 1,
             "patch_visual_texture": "t7_concrete_pebbles_cracked",
         },
         "indoor_subtle": {
-            # No broken_floor mask — we want a continuous gently-settled
-            # surface, not patches punching through. Very low relief so
-            # it reads as "the tile floor heaved a little", not terrain.
+            # No broken_floor mask — a continuous gently-settled surface,
+            # not patches punching through. ~16u of relief above the
+            # floor reads as "the tile floor heaved/settled" — clearly
+            # perceptible but not terrain-scale. (8u smoothed 3x was
+            # imperceptible AND, combined with the absolute-clamp bug,
+            # buried the patch.)
             "terrain_style": "full_voxel",
-            "max_height_units": 8.0,
+            "relief_units": 16.0,
             "edge_feather_units": 64.0,
-            "smooth_iterations": 3,           # extra smoothing = subtle
+            "smooth_iterations": 2,
             "patch_visual_texture": "t7_concrete_tiles_2x2_dirty_01",
         },
     }
@@ -433,7 +447,8 @@ def make_terrain_zombie_arena(
         _p = _PRESETS[terrain_preset]
         terrain_style = _p.get("terrain_style", terrain_style)
         broken_floor_coverage = _p.get("broken_floor_coverage", broken_floor_coverage)
-        max_height_units = _p.get("max_height_units", max_height_units)
+        # relief is ABOVE the floor; the pipeline clamp is absolute.
+        max_height_units = floor_thickness_units + _p["relief_units"]
         edge_feather_units = _p.get("edge_feather_units", edge_feather_units)
         smooth_iterations = _p.get("smooth_iterations", smooth_iterations)
         patch_visual_texture = _p.get("patch_visual_texture", patch_visual_texture)
