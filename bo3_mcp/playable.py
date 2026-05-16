@@ -36,7 +36,7 @@ import os
 import re
 from typing import Any, Literal
 
-from . import geometry, mapfile, paths, scaffold, terrain, zm
+from . import geometry, mapfile, paths, scaffold, scatter, terrain, zm
 
 PlayableLayout = Literal["three_zone"]  # "two_zone_minimal" / "single_arena" → future, currently UNVERIFIED
 
@@ -367,6 +367,16 @@ def make_terrain_zombie_arena(
     # The preset wins over the individual knob defaults; pass "none" if
     # you want to drive every knob by hand.
     terrain_preset: str = "outdoor_rugged",
+    # v23.15: scatter stock foliage/debris across the arena terrain for
+    # environmental life. Verified safe in zm_scatter_lab: every prop is
+    # misc_model + no_collmap (zero collision → cannot affect zombie
+    # navmesh/pathing, by construction). Doorways/spawners/perks/wall
+    # buys/courtyards are auto-excluded so nothing clips a machine or
+    # blocks a sightline.
+    scatter_props: bool = True,
+    scatter_categories: tuple[str, ...] = ("grass", "debris"),
+    scatter_density: float = 0.5,
+    scatter_seed: int | None = None,  # None → derive from terrain_seed
     terrain_server_url: str = "http://localhost:8000",
     overwrite: bool = False,
 ) -> dict[str, Any]:
@@ -630,6 +640,52 @@ def make_terrain_zombie_arena(
         ],
         light_color=(0.9, 0.95, 1.0), light_radius=480, light_stops=5.0,
     )
+
+    # ── 10b. Scatter foliage/debris across the arena terrain for
+    # environmental life. Props are misc_model + no_collmap (verified
+    # in zm_scatter_lab) so they CANNOT affect zombie navmesh/pathing —
+    # the whole "does scatter break gameplay" risk is designed out, not
+    # tested out. Exclusions keep props off every interactable + the
+    # doorway approaches so nothing clips a machine or blocks a
+    # sightline. Footprint = the terrain footprint from step 7.
+    if scatter_props:
+        fm = terrain_result.get("footprint_mins", (terrain_origin[0],
+                                                   terrain_origin[1], 0.0))
+        fM = terrain_result.get("footprint_maxs", (terrain_origin[0],
+                                                   terrain_origin[1], 0.0))
+        exclusions: list[tuple[float, float, float]] = []
+        # Doorway pads (centre + a bit more than their flatten radius).
+        for pad in pads:
+            cx, cy = pad["center"]
+            exclusions.append((float(cx), float(cy),
+                               float(pad.get("radius", 64.0)) + 48.0))
+        # Arena spawners (riser cubes — keep props off them).
+        for (sx, sy) in spawner_world_positions:
+            exclusions.append((float(sx), float(sy), 80.0))
+        # Perk machines (big footprints + an approach apron).
+        if perks_result:
+            for p in perks_result.get("placed", []):
+                px, py = p["xy"]
+                exclusions.append((float(px), float(py), 110.0))
+        # Wall buys (chalk + buy trigger).
+        for wb in arena_wall_buys:
+            wx, wy = wb["origin"][0], wb["origin"][1]
+            exclusions.append((float(wx), float(wy), 80.0))
+        scat = scatter.scatter_props(
+            map_name,
+            footprint_mins=(fm[0], fm[1]),
+            footprint_maxs=(fM[0], fM[1]),
+            categories=scatter_categories,
+            density=scatter_density,
+            exclusions=exclusions,
+            edge_margin=56.0,
+            seed=scatter_seed if scatter_seed is not None else terrain_seed,
+        )
+        summary["steps"].append({
+            "arena_scatter_props": scat["placed"],
+            "scatter_rejected_exclusion": scat["rejected_exclusion"],
+            "scatter_categories": list(scatter_categories),
+        })
 
     # ── 11. Vault: 2 interior spawners + light + mystery box + PaP + switch.
     zm.furnish_zone(

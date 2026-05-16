@@ -250,6 +250,10 @@ def make_terrain_zombie_arena(
     patch_visual_texture: str | None = None,
     patch_min_z_offset: float | None = None,
     terrain_preset: str | None = None,
+    scatter_props: bool | None = None,
+    scatter_categories: list[str] | None = None,
+    scatter_density: float | None = None,
+    scatter_seed: int | None = None,
     terrain_server_url: str | None = None,
     overwrite: bool = False,
 ) -> dict:
@@ -327,6 +331,14 @@ def make_terrain_zombie_arena(
         kwargs["patch_min_z_offset"] = patch_min_z_offset
     if terrain_preset is not None:
         kwargs["terrain_preset"] = terrain_preset
+    if scatter_props is not None:
+        kwargs["scatter_props"] = scatter_props
+    if scatter_categories is not None:
+        kwargs["scatter_categories"] = tuple(scatter_categories)
+    if scatter_density is not None:
+        kwargs["scatter_density"] = scatter_density
+    if scatter_seed is not None:
+        kwargs["scatter_seed"] = scatter_seed
     if terrain_server_url is not None:
         kwargs["terrain_server_url"] = terrain_server_url
     return playable.make_terrain_zombie_arena(map_name, **kwargs)
