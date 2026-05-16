@@ -1172,18 +1172,54 @@ def terrain_height_at_xy(
             "z": float(oz),
             "cell": (col, row),
             "scaled_height_units": 0.0,
+            "cell_spread": 0.0,
+            "interpolated": True,
             "sidecar_path": sidecar_path,
             "reason": (
                 f"world ({x}, {y}) outside terrain footprint "
                 f"({ox}..{ox + cols * cell_size}, {oy}..{oy + rows * cell_size})"
             ),
         }
-    scaled_h = float(heightmap[row][col])
+
+    # ── BILINEAR surface sample (matches the patch mesh exactly) ──────
+    # The patch mesh interpolates LINEARLY between the 4 corner CPs of
+    # each cell (the engine triangulates each quad). Nearest-corner here
+    # returned scaled_heightmap[row][col] — a flat per-cell STEP — which
+    # is up to a full cell's height-delta off the real ramped surface on
+    # broken_floor terrain (proven: ±18u on built zm_terrain_v5, 18% of
+    # scatter props). Bilerp of the same 4 corners reproduces the mesh
+    # to sub-unit accuracy → props/perks/spawners sit ON the surface,
+    # flat OR sloped. Index clamps reproduce the patch's duplicated edge
+    # skirt (heightmap is the pre-pad `scaled`; the patch was built from
+    # `padded` = scaled with last row/col duplicated). in_bounds gate is
+    # unchanged → footprint parity preserved.
+    col0 = max(0, min(cols - 1, col))
+    row0 = max(0, min(rows - 1, row))
+    col1 = min(cols - 1, col0 + 1)
+    row1 = min(rows - 1, row0 + 1)
+    fx = col_f - col0
+    fy = row_f - row0
+    fx = 0.0 if fx < 0.0 else (1.0 if fx > 1.0 else fx)
+    fy = 0.0 if fy < 0.0 else (1.0 if fy > 1.0 else fy)
+    h00 = float(heightmap[row0][col0])
+    h10 = float(heightmap[row0][col1])
+    h01 = float(heightmap[row1][col0])
+    h11 = float(heightmap[row1][col1])
+    top = h00 + (h10 - h00) * fx
+    bot = h01 + (h11 - h01) * fx
+    scaled_h = top + (bot - top) * fy
+    cell_spread = max(h00, h10, h01, h11) - min(h00, h10, h01, h11)
+
     return {
         "found": True,
         "z": float(oz) + scaled_h,
         "cell": (col, row),
         "scaled_height_units": scaled_h,
+        # max−min of the 4 surrounding corner heights = local steepness
+        # over one cell. NOT used to reject scatter (grass belongs on
+        # slopes); exposed for diagnostics + optional slope-normal tilt.
+        "cell_spread": float(cell_spread),
+        "interpolated": True,
         "sidecar_path": sidecar_path,
     }
 
