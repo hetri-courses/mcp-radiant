@@ -702,6 +702,17 @@ def make_terrain_zombie_arena(
                 # (the v23.16 state the user approved). The v23.19
                 # mask-gate silently thinned the *scattered* grass,
                 # which was never asked for.
+                # v23.23: slope-aware SINK. Bilinear Z is exact (0.00u
+                # off the mesh, proven) but a finite-width tuft can't
+                # conform to terrain varying under its footprint — anchor
+                # it INTO the ground so the downhill side never floats.
+                # Tall wide cluster models were also dropped from the
+                # catalog. These are LAB-TUNED starting values — verify
+                # in zm_scatter_lab and adjust before shipping to v5.
+                sink_base=4.0,
+                sink_slope_factor=0.6,
+                sink_max=24.0,
+                steep_scale_cap=1.0,
                 seed=base_seed,
             )
             placed_total += g["placed"]

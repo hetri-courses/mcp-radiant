@@ -49,13 +49,20 @@ Point2 = tuple[float, float]
 PROP_CATALOG: dict[str, list[tuple[str, float]]] = {
     # Low ground cover — densest, smallest. The bread-and-butter of
     # "this isn't an empty plane".
+    # v23.23: the tall, WIDE cluster models (p7_foliage_grass_tall_
+    # cluster_sml/med) were dropped. Z placement is exact (bilinear,
+    # proven 0.00u off the mesh), but a single ground point can't make a
+    # big splayed cluster conform to terrain that rises/falls UNDER its
+    # own footprint — on broken_floor's steep patch sides the ground
+    # varies 20-40u across one cluster, so its downhill blades hang in
+    # the air. That was the "floating grass". Compact single tufts have
+    # a small footprint and conform far better; remaining float is
+    # absorbed by the slope-aware sink (see scatter_props sink_*).
     "grass": [
         ("p7_foliage_grass_02", 3.0),
         ("p7_foliage_grass_dry_02", 3.0),
         ("p7_foliage_grass_dry_03", 2.0),
         ("p7_foliage_grass_flowers", 1.0),
-        ("p7_foliage_grass_tall_cluster_sml", 1.5),
-        ("p7_foliage_grass_tall_cluster_med", 1.0),
         ("p7_eth_foliage_grass_small_wild", 2.0),
     ],
     # Mid debris — sparser, breaks up the ground texture. ONLY small
@@ -123,6 +130,24 @@ def scatter_props(
     seed: int | None = None,
     layer: str = "000_Global/Geo/Scatter",
     fallback_z: float = 16.0,
+    # ── v23.23 slope-aware SINK ──────────────────────────────────────
+    # terrain_height_at_xy is now exact (bilinear; verified 0.00u off
+    # the rendered mesh on 207/207 props). But a finite-width model
+    # placed at ONE ground point still can't conform to terrain that
+    # varies under its own footprint — on a slope the downhill side
+    # hangs in the air. Fix: push the origin BELOW the surface so the
+    # model is anchored INTO the ground. Mild ground-clip reads as
+    # "planted"; floating never does. Sink grows with local steepness
+    # (cell_spread from terrain_height_at_xy). Defaults 0.0 → ZERO
+    # behaviour change for callers that don't opt in (e.g. debris pass,
+    # hand-authored maps).
+    sink_base: float = 0.0,
+    sink_slope_factor: float = 0.0,
+    sink_max: float = 24.0,
+    # On steep cells also cap the random model scale — a big tuft on a
+    # near-cliff overhangs the most. None = no cap.
+    steep_scale_cap: float | None = None,
+    steep_spread_threshold: float = 16.0,
 ) -> dict:
     """Scatter `misc_model` props across a map's terrain surface.
 
@@ -170,14 +195,19 @@ def scatter_props(
     except Exception:
         sidecar_exists = True  # other errors: assume sidecar present, surface later
 
-    def _z_at(px: float, py: float) -> float:
+    def _surface(px: float, py: float) -> tuple[float, float]:
+        """(surface_z, cell_spread). cell_spread = local relief over one
+        terrain cell — drives the slope-aware sink. No sidecar (flat /
+        non-TD map) → flat fallback, zero spread."""
         if not sidecar_exists:
-            return fallback_z
+            return fallback_z, 0.0
         try:
             h = _terrain.terrain_height_at_xy(map_name, px, py)
-            return h["z"] if h.get("found") else fallback_z
+            if h.get("found"):
+                return h["z"], float(h.get("cell_spread", 0.0))
+            return fallback_z, 0.0
         except FileNotFoundError:
-            return fallback_z
+            return fallback_z, 0.0
 
     bad = [c for c in categories if c not in PROP_CATALOG]
     if bad:
@@ -263,9 +293,19 @@ def scatter_props(
                 if (jx <= max_x and jy <= max_y
                         and not _excluded(jx, jy)
                         and _mask_ok(jx, jy)):
-                    pz = _z_at(jx, jy)
+                    sz, spread = _surface(jx, jy)
+                    sink = sink_base + sink_slope_factor * spread
+                    if sink > sink_max:
+                        sink = sink_max
+                    pz = sz - sink
                     model = _weighted_pick(rng, palette)
-                    scale = rng.uniform(*scale_range)
+                    s_lo, s_hi = scale_range
+                    if (steep_scale_cap is not None
+                            and spread > steep_spread_threshold):
+                        s_hi = min(s_hi, steep_scale_cap)
+                        if s_lo > s_hi:
+                            s_lo = s_hi
+                    scale = rng.uniform(s_lo, s_hi)
                     yaw = rng.uniform(0.0, 360.0)
                     entities.add_entity(
                         mf, "misc_model",
@@ -290,6 +330,15 @@ def scatter_props(
         "categories": list(categories),
         "models_used": models_used,
         "footprint": [[min_x, min_y], [max_x, max_y]],
+        # v23.23 sink diagnostics — echo what was applied so the lab
+        # output shows it without re-reading the .map.
+        "sink": {
+            "base": sink_base,
+            "slope_factor": sink_slope_factor,
+            "max": sink_max,
+            "steep_scale_cap": steep_scale_cap,
+            "steep_spread_threshold": steep_spread_threshold,
+        },
         # v23.19: exact XY of every placed prop. The terrain recipe
         # uses the grass pass's positions to paint a grass-floor blend
         # halo EXACTLY under the scatter (not an independent mask).
