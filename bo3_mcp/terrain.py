@@ -1400,6 +1400,7 @@ def generate_canyon_walls(
     edge_cols: float = 1.5,
     door_gaps: dict[str, tuple[float, float]] | None = None,
     door_lintel_z: float = 110.0,
+    door_chamfer: float = 56.0,
     texture: str = "t7_concrete_pebbles_cracked",
     uv_scale: float = 8.0,
     seed: int = 1337,
@@ -1465,15 +1466,22 @@ def generate_canyon_walls(
         return [a0 + step * i for i in range(n)]
 
     def _door_ribbon(a0, a1, gap):
-        """Full-side along-sample list. For a door side, inject crisp
-        jamb columns — the opening edges and a point ~2u OUTSIDE each —
-        so the doorway side is a near-vertical rock jamb, not a wide
-        diagonal. Preserves the a0→a1 sweep direction (col order sets
-        the patch normal)."""
+        """Full-side along-sample list. For a door side, build a clean
+        CHAMFER each side of the opening: clear any uniform samples in
+        the (edge±chamfer) band and inject exactly [lo-ch, lo, hi,
+        hi+ch]. The lo↔lo-ch (and hi↔hi+ch) columns differ in bottom Z
+        (lintel vs base), so each is ONE wide quad — a rock funnel into
+        the door, NOT a 2u sliver (slivers texture-streak: a 2u face
+        only shows a 2u-wide strip of rock blown up the whole height).
+        Uniform samples inside (lo,hi) are kept (crag on the rock above
+        the door). Preserves the a0→a1 sweep (col order sets normal)."""
         pts = list(_samples(a0, a1))
         if gap:
             lo, hi = min(gap), max(gap)
-            pts += [lo - 2.0, lo, hi, hi + 2.0]
+            ch = door_chamfer
+            pts = [p for p in pts
+                   if not (lo - ch < p < lo) and not (hi < p < hi + ch)]
+            pts += [lo - ch, lo, hi, hi + ch]
         return sorted({round(p, 3) for p in pts}, reverse=(a0 > a1))
 
     mf, ws = geometry._load_top(map_name)
