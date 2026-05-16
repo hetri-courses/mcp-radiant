@@ -623,12 +623,17 @@ def make_terrain_zombie_arena(
     # doorways (y∈[-40,40]) get a ±72 gap so the buyable doors stay
     # clear. base_z below the floor so the wall foot is buried (no lip).
     if canyon_walls:
+        # Arena room is z[0..384] (carve maxs z=384) → ceiling_z=384 so
+        # the rock rises full-height (crown occluded by the ceiling
+        # brush; no flat gray box wall shows). Doorway gap kept (arch
+        # integration is a future feature, not this pass).
         canyon = terrain.generate_canyon_walls(
             map_name,
             interior_mins=(-112.0, -496.0),
             interior_maxs=(752.0, 496.0),
             base_z=floor_thickness_units - 8.0,
-            door_gaps={"west": (-72.0, 72.0), "east": (-72.0, 72.0)},
+            ceiling_z=384.0,
+            door_gaps={"west": (-64.0, 64.0), "east": (-64.0, 64.0)},
             seed=(terrain_seed or 42),
         )
         summary["steps"].append({
