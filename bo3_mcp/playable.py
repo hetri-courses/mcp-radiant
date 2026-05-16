@@ -426,15 +426,26 @@ def make_terrain_zombie_arena(
         },
         "indoor_subtle": {
             # No broken_floor mask — a continuous gently-settled surface,
-            # not patches punching through. ~16u of relief above the
-            # floor reads as "the tile floor heaved/settled" — clearly
-            # perceptible but not terrain-scale. (8u smoothed 3x was
-            # imperceptible AND, combined with the absolute-clamp bug,
-            # buried the patch.)
+            # not patches punching through.
+            #
+            # edge_feather = 0 ON PURPOSE. The feather flattens the
+            # perimeter to floor level; on a small indoor relief that
+            # reads as an unnatural "flat frame around a raised plateau"
+            # (v23.10 playtest). A real heaved/settled tile floor
+            # undulates continuously right up to the walls — no frame.
+            # Feather is an OUTDOOR concern (keep terrain from
+            # hard-walling / blocking doorways); at ~10u indoor relief
+            # neither applies (10u can't block a 96u doorway). v23.7
+            # edge-padding still gives a flat 1-cell skirt at the bound
+            # so it meets the wall cleanly without a hard cliff.
+            #
+            # relief 10u (was 16) — 16 still read as "excessive" for a
+            # subtle settled floor; 10u smoothed 3x is gentle but
+            # perceptible.
             "terrain_style": "full_voxel",
-            "relief_units": 16.0,
-            "edge_feather_units": 64.0,
-            "smooth_iterations": 2,
+            "relief_units": 10.0,
+            "edge_feather_units": 0.0,
+            "smooth_iterations": 3,
             "patch_visual_texture": "t7_concrete_tiles_2x2_dirty_01",
         },
     }
