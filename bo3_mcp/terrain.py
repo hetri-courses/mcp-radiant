@@ -1598,6 +1598,100 @@ def generate_canyon_walls(
     }
 
 
+def generate_canyon_ceiling(
+    map_name: str,
+    *,
+    interior_mins: tuple[float, float],
+    interior_maxs: tuple[float, float],
+    edge_z: float = 372.0,
+    sag: float = 80.0,
+    min_clear_z: float = 236.0,
+    cell: float = 64.0,
+    edge_cells: float = 2.0,
+    detail_frac: float = 0.3,
+    texture: str = "t7_concrete_pebbles_cracked",
+    uv_scale: float = 8.0,
+    seed: int = 2024,
+) -> dict:
+    """Procedural cave ROOF — one horizontal patch mesh over the arena,
+    normals facing DOWN (visible from below). Pairs with
+    generate_canyon_walls to finish the `outdoor_canyon` look (no flat
+    box ceiling showing).
+
+    Shape: attached HIGH at the perimeter (≈edge_z, near the box
+    ceiling, where the wall crowns are) and SAGS down toward the
+    interior by two-scale value noise — a believable cavern roof.
+    Clamped to min_clear_z so it never intrudes on gameplay headroom
+    (arena play tops out ~130z; default floor 236 leaves >100u clear).
+
+    Like the walls this is a VISIBLE + SOLID inner skin (visual + a
+    `weaponClip detail` collision twin); the box-room ceiling + sky/
+    umbra seal ABOVE it are left intact (load-bearing — not touched).
+
+    Normal control: mesh_block normal = rowdir × coldir. Floor uses
+    outer→+X, inner→+Y ⇒ +Z (up). Here inner (Y) is emitted REVERSED ⇒
+    outer→+X, inner→−Y ⇒ −Z (down) so the roof is visible from inside.
+    """
+    from . import patches as _patches
+
+    xmin, ymin = float(interior_mins[0]), float(interior_mins[1])
+    xmax, ymax = float(interior_maxs[0]), float(interior_maxs[1])
+    nx = max(2, int(round((xmax - xmin) / cell)) + 1)
+    ny = max(2, int(round((ymax - ymin) / cell)) + 1)
+    ec = max(0.5, float(edge_cells))
+    big = value_noise_heightmap(nx, ny, scale=0.12, octaves=4, seed=seed)
+    fine = value_noise_heightmap(nx, ny, scale=0.5, octaves=3, seed=seed + 7)
+
+    def _z(ix: int, iy: int) -> float:
+        # rim factor: 0 at the perimeter (meets the wall crowns high),
+        # → 1 deep inside (full sag) over `edge_cells` cells
+        d = min(ix, iy, nx - 1 - ix, ny - 1 - iy)
+        rf = d / ec
+        if rf > 1.0:
+            rf = 1.0
+        n = big[iy][ix] * (1.0 - detail_frac) + fine[iy][ix] * detail_frac
+        z = edge_z - sag * n * rf
+        return z if z > min_clear_z else min_clear_z
+
+    # cps[outer=X][inner=Y]; inner Y REVERSED → −Z (down-facing) normal
+    cps: list[list[tuple[float, float, float]]] = []
+    uvs: list[list[tuple[float, float]]] = []
+    for ix in range(nx):
+        wx = xmin + ix * cell
+        crow: list[tuple[float, float, float]] = []
+        urow: list[tuple[float, float]] = []
+        for iy in range(ny - 1, -1, -1):
+            wy = ymin + iy * cell
+            crow.append((wx, wy, _z(ix, iy)))
+            urow.append((wx * uv_scale, -wy * uv_scale))
+        cps.append(crow)
+        uvs.append(urow)
+
+    mf, ws = geometry._load_top(map_name)
+    visual = _patches.mesh_block(
+        cps, texture=texture, contents=None,
+        auto_orient=False, uv_override=uvs,
+    )
+    collision = _patches.mesh_block(
+        cps, texture=texture,
+        contents=_patches.FLOOR_COLLISION_CONTENTS,
+        auto_orient=False, uv_override=uvs,
+    )
+    ws.brushes.append(visual)
+    ws.brushes.append(collision)
+    geometry._save_top(mf, map_name)
+    return {
+        "meshes_added": 2,
+        "grid": [nx, ny],
+        "edge_z": edge_z,
+        "sag": sag,
+        "min_clear_z": min_clear_z,
+        "interior_mins": [xmin, ymin],
+        "interior_maxs": [xmax, ymax],
+        "texture": texture,
+    }
+
+
 def paint_terrain_blend_overlay(
     map_name: str,
     points: Sequence[tuple[float, float]],

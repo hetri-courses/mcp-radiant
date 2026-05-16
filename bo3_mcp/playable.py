@@ -478,9 +478,11 @@ def make_terrain_zombie_arena(
             "smooth_iterations": 1,
             "patch_visual_texture": "t7_dirt_grassy_forest_ground",
             "canyon_walls": True,
+            "canyon_ceiling": True,
         },
     }
-    canyon_walls = False  # opt-in via the outdoor_canyon preset
+    canyon_walls = False    # opt-in via the outdoor_canyon preset
+    canyon_ceiling = False  # opt-in via the outdoor_canyon preset
     if terrain_preset != "none":
         if terrain_preset not in _PRESETS:
             raise ValueError(
@@ -496,6 +498,7 @@ def make_terrain_zombie_arena(
         smooth_iterations = _p.get("smooth_iterations", smooth_iterations)
         patch_visual_texture = _p.get("patch_visual_texture", patch_visual_texture)
         canyon_walls = bool(_p.get("canyon_walls", canyon_walls))
+        canyon_ceiling = bool(_p.get("canyon_ceiling", canyon_ceiling))
 
     summary: dict[str, Any] = {
         "name": map_name, "layout": "terrain_arena",
@@ -644,6 +647,21 @@ def make_terrain_zombie_arena(
         summary["steps"].append({
             "canyon_walls_meshes": canyon["meshes_added"],
             "canyon_per_side": canyon["per_side"],
+        })
+
+    # ── 7c. (opt-in) Procedural cave ROOF — finishes outdoor_canyon so
+    # there's no flat gray box ceiling. Attached high at the perimeter
+    # (meets the wall crowns) and sags toward the interior; clamped well
+    # above gameplay headroom. Box ceiling + sky/umbra seal stay intact.
+    if canyon_ceiling:
+        ceil = terrain.generate_canyon_ceiling(
+            map_name,
+            interior_mins=(-112.0, -496.0),
+            interior_maxs=(752.0, 496.0),
+        )
+        summary["steps"].append({
+            "canyon_ceiling_meshes": ceil["meshes_added"],
+            "canyon_ceiling_grid": ceil["grid"],
         })
 
     # ── 8. Place arena spawners ON the terrain surface (auto-Z).
