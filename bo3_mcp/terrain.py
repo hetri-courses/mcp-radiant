@@ -1193,6 +1193,7 @@ def place_perks_on_terrain(
     perks_layout: list[tuple[str, tuple[float, float]]],
     *,
     angles: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    face_bounds: tuple[tuple[float, float], tuple[float, float]] | None = None,
     fallback_z: float = 16.0,
 ) -> dict:
     """Place perk machines on the terrain surface.
@@ -1201,6 +1202,21 @@ def place_perks_on_terrain(
     is placed at z = terrain_top via terrain_height_at_xy. Perks
     outside the terrain footprint fall back to z=`fallback_z`.
 
+    Orientation:
+      - If `face_bounds=((min_x, min_y), (max_x, max_y))` is given, each
+        perk auto-faces AWAY from whichever of those 4 walls it is
+        nearest (i.e. into the room). This is the reusable
+        "perks against the wall facing the play area" behaviour and
+        avoids hand-tuning per-perk yaw in every recipe.
+        Verified convention (zm_terrain_v5 playtest, May 2026): the
+        perk prefab's visual FRONT at yaw=0 points -Y (south), so:
+          nearest = south wall  -> yaw 180 (face +Y / north, inward)
+          nearest = north wall  -> yaw 0   (face -Y / south, inward)
+          nearest = west wall   -> yaw 90  (face +X / east, inward)
+          nearest = east wall   -> yaw 270 (face -X / west, inward)
+      - Otherwise every perk gets the single shared `angles` (default
+        (0,0,0)) — same as before.
+
     Perk prefabs are designed so the origin sits AT the floor surface;
     no z_offset added (unlike spawners, where the prefab includes the
     spawn-from-below animation that needs a small clearance).
@@ -1208,20 +1224,42 @@ def place_perks_on_terrain(
     Reusable from any recipe. Not coupled to a particular zone layout.
 
     Returns:
-        {"placed": [{"perk", "xy", "z", "terrain_found"}, ...], "count": int}
+        {"placed": [{"perk", "xy", "z", "yaw", "terrain_found"}, ...],
+         "count": int}
     """
     from . import zm as _zm
+
+    def _inward_yaw(x: float, y: float) -> float:
+        (min_x, min_y), (max_x, max_y) = face_bounds  # type: ignore[misc]
+        d_south = y - min_y
+        d_north = max_y - y
+        d_west = x - min_x
+        d_east = max_x - x
+        nearest = min(d_south, d_north, d_west, d_east)
+        if nearest == d_south:
+            return 180.0  # against south wall -> face north (inward)
+        if nearest == d_north:
+            return 0.0    # against north wall -> face south (inward)
+        if nearest == d_west:
+            return 90.0   # against west wall -> face east (inward)
+        return 270.0      # against east wall -> face west (inward)
 
     placed: list[dict] = []
     for perk_slug, (x, y) in perks_layout:
         h = terrain_height_at_xy(map_name, x, y)
         pz = h["z"] if h["found"] else fallback_z
+        if face_bounds is not None:
+            yaw = _inward_yaw(float(x), float(y))
+            perk_angles = (0.0, yaw, 0.0)
+        else:
+            perk_angles = angles
         _zm.add_perk(map_name, perk_slug, origin=(float(x), float(y), float(pz)),
-                     angles=angles)
+                     angles=perk_angles)
         placed.append({
             "perk": perk_slug,
             "xy": (float(x), float(y)),
             "z": float(pz),
+            "yaw": float(perk_angles[1]),
             "terrain_found": h["found"],
         })
     return {"placed": placed, "count": len(placed)}

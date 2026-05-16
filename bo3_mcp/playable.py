@@ -523,8 +523,14 @@ def make_terrain_zombie_arena(
             ("double_tap",   (32,   352)),
             ("quick_revive", (608,  352)),
         ]
+        # Auto-orient each perk to face away from its nearest arena
+        # wall (into the play area). Arena interior is x[-112..752]
+        # y[-496..496] (room mins/maxs -128/768, -512/512, walls 16
+        # thick). Without this the perks all share yaw=0 and the
+        # ones along the south wall face INTO the wall (v5 playtest).
         perks_result = terrain.place_perks_on_terrain(
             map_name, perks_layout=perks_layout,
+            face_bounds=((-112.0, -496.0), (752.0, 496.0)),
         )
         summary["steps"].append({"arena_perks_on_terrain": perks_result["count"]})
 

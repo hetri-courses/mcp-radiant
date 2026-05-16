@@ -216,6 +216,19 @@ def _gsc_template(map_name: str) -> str:
 
 function main()
 {{
+	// Disable hellhound rounds. zm_usermap::main() does
+	// DEFAULT(level.dog_rounds_allowed,1) then enable_dog_rounds(),
+	// which at round 5 spawns dogs from level.dog_spawners. Procedurally
+	// generated maps have NO `zombie_dog_spawner` entities, so that
+	// array is empty and `level.dog_spawners[0]` derefs undefined:
+	//   "undefined is not an array, string, or vector
+	//    scripts/zm/_zm_ai_dogs.gsc:0"
+	// Setting this to 0 BEFORE zm_usermap::main() makes the DEFAULT
+	// macro a no-op (value already defined), so enable_dog_rounds()
+	// is never called. To ship a map WITH hellhounds, place
+	// `zombie_dog_spawner` script_noteworthy structs and set this to 1.
+	level.dog_rounds_allowed = 0;
+
 	zm_usermap::main();
 
 	level.default_game_mode = "zclassic";
