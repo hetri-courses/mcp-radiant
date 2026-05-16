@@ -894,8 +894,29 @@ def generate_terrain_diffusion(
         if patch_min_z_offset > 0:
             scaled = [[v + patch_min_z_offset for v in row] for row in scaled]
             preprocessing_applied["patch_min_z_offset"] = float(patch_min_z_offset)
+        # ── Footprint parity with voxel mode ─────────────────────────
+        # Voxel mode treats each of the N heightmap values as a CELL,
+        # so N cells cover N*cell_size of world space. Patch mode
+        # treats each value as a CONTROL POINT, so N CPs only span
+        # (N-1)*cell_size — one cell-width SHORT on the high-X and
+        # high-Y edges. That gap shows the bare room floor at the
+        # arena borders (the user's v5 regression).
+        #
+        # Fix: replicate the last row and column so we have N+1 CPs
+        # spanning N intervals = N*cell_size, exactly matching the
+        # voxel footprint and the arena interior. Edge values are
+        # duplicated (flat skirt of one cell), which is harmless
+        # because edge_feather has already brought the boundary down
+        # to the flat floor anyway.
+        padded = [list(row) + [row[-1]] for row in scaled]
+        padded.append(list(padded[-1]))
+        preprocessing_applied["patch_edge_pad"] = {
+            "from_shape": [len(scaled), len(scaled[0])],
+            "to_shape": [len(padded), len(padded[0])],
+            "reason": "footprint parity with voxel (N cells -> N+1 CPs)",
+        }
         patch_bodies = _patches.heightmap_to_mesh_patches(
-            scaled,
+            padded,
             origin=origin,
             cell_size=cell_size,
             chunk_size=patch_chunk_size,
@@ -1381,14 +1402,51 @@ def start_terrain_diffusion_server(
         repo_dir + (os.pathsep + existing_pp if existing_pp else "")
     )
 
-    proc = subprocess.Popen(
-        cmd,
-        cwd=repo_dir,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        env=env,
-    )
+    # Spawning a long-lived child from an MCP server has TWO traps, both
+    # of which froze this server at ~5 MB RSS / 0-byte log forever:
+    #
+    # 1. stdout=PIPE that nobody drains → the ~64 KB OS pipe buffer fills
+    #    with torch/diffusers/HF load spam, the child blocks on its next
+    #    write(), deadlock. (Old bug.)
+    # 2. Inherited stdio. This MCP process talks to Claude Desktop over
+    #    its OWN stdin/stdout. A bare Popen lets the child INHERIT those
+    #    handles. werkzeug's dev server + that inherited stdio deadlocks
+    #    the child AND can corrupt the MCP↔client channel. (New bug —
+    #    this is why Popen froze while a manual shell launch worked.)
+    #
+    # Fix: detach the child completely — stdin from DEVNULL, stdout/
+    # stderr to a log file, force `-u` so the log is unbuffered, and on
+    # Windows put it in its own process group so a parent console event
+    # can't take it down. This mirrors the manual
+    # `nohup python -u ... > log 2>&1 &` invocation that works.
+    if "-u" not in cmd:
+        cmd = [cmd[0], "-u", *cmd[1:]]
+    log_path = os.path.join(repo_dir, "terrain_server.log")
+    log_fh = open(log_path, "w", encoding="utf-8", errors="replace")
+    popen_kwargs: dict = {
+        "cwd": repo_dir,
+        "stdin": subprocess.DEVNULL,
+        "stdout": log_fh,
+        "stderr": subprocess.STDOUT,
+        "text": True,
+        "env": env,
+        "close_fds": True,
+    }
+    if os.name == "nt":
+        # DETACHED_PROCESS (0x00000008) + CREATE_NEW_PROCESS_GROUP
+        # (0x00000200): the child does not share the MCP's console and
+        # is immune to Ctrl-C/console-close events aimed at the parent.
+        popen_kwargs["creationflags"] = 0x00000008 | 0x00000200
+    else:
+        popen_kwargs["start_new_session"] = True
+    proc = subprocess.Popen(cmd, **popen_kwargs)
+
+    def _read_log_tail(n_chars: int = 2000) -> str:
+        try:
+            with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+                return f.read()[-n_chars:]
+        except OSError:
+            return "(log unreadable)"
 
     result = {
         "pid": proc.pid,
@@ -1397,6 +1455,7 @@ def start_terrain_diffusion_server(
         "repo_dir": repo_dir,
         "venv_python": venv_python,
         "device": device,
+        "log_path": log_path,
         "ready": False,
     }
 
@@ -1414,16 +1473,11 @@ def start_terrain_diffusion_server(
     url = f"http://localhost:{port}/health"
     while time.time() - start < ready_timeout:
         if proc.poll() is not None:
-            # Process died before ready
-            out = ""
-            if proc.stdout:
-                try:
-                    out = proc.stdout.read()
-                except Exception:
-                    pass
+            # Process died before ready — surface the log tail.
             raise RuntimeError(
                 f"terrain-diffusion server exited early "
-                f"(returncode={proc.returncode}). Output:\n{out[-2000:]}"
+                f"(returncode={proc.returncode}). Log tail "
+                f"({log_path}):\n{_read_log_tail()}"
             )
         try:
             with urllib.request.urlopen(url, timeout=2.0) as resp:
@@ -1437,8 +1491,8 @@ def start_terrain_diffusion_server(
 
     result["note"] = (
         f"Server didn't respond within {ready_timeout}s — may still be "
-        f"loading model weights (first run takes 1-3 min). Check the "
-        f"process output, or retry with wait_for_ready=False and poll "
-        f"manually."
+        f"loading model weights (first run takes 1-3 min). Tail the log "
+        f"at {log_path} to see progress (it is NOT pipe-blocked now)."
     )
+    result["log_tail"] = _read_log_tail()
     return result
