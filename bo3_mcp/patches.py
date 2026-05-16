@@ -431,6 +431,71 @@ def heightmap_to_mesh_patches(
     return out
 
 
+def heightmap_to_blend_overlay(
+    heightmap: Sequence[Sequence[float]],
+    alpha_grid: Sequence[Sequence[int]],
+    *,
+    origin: Point = (0.0, 0.0, 0.0),
+    cell_size: float = 64.0,
+    chunk_size: int = 8,
+    blend_texture: str = "t7_grass_lawn_medium_small_green_vibrant_blend",
+    z_lift: float = 1.0,
+    uv_scale: float = 8.0,
+) -> list[str]:
+    """Emit the vertex-alpha BLEND overlay meshes for a heightmap.
+
+    Mirrors `heightmap_to_mesh_patches`' chunking EXACTLY (same X-major
+    loop, same shared-edge CPs) but emits ONE renderable `blend_texture`
+    mesh per chunk, lifted `z_lift` units above the base surface, with
+    per-CP `vertex_alpha` sampled from `alpha_grid` (same [y][x] indexing
+    as heightmap, values 0-255). Where alpha is 0 the base terrain mesh
+    shows through; where 255 the blend (e.g. grass) is fully opaque.
+
+    Stack the returned bodies on top of the base meshes from
+    `heightmap_to_mesh_patches`. This is BO3's canonical 2-layer
+    vertex-alpha terrain blend (verified format: mp_combine_terrain_north
+    + zm_blend_lab runtime). No `contents` — the overlay is visual only;
+    the base mesh's collision twin handles walkability.
+    """
+    y_count = len(heightmap)
+    x_count = len(heightmap[0]) if y_count else 0
+    if (len(alpha_grid) != y_count
+            or any(len(alpha_grid[y]) != x_count for y in range(y_count))):
+        raise ValueError(
+            f"alpha_grid shape must match heightmap ({y_count}x{x_count})"
+        )
+    ox, oy, _oz = origin
+    out: list[str] = []
+    x0 = 0
+    while x0 < x_count - 1:
+        x1 = min(x0 + chunk_size, x_count - 1)
+        y0 = 0
+        while y0 < y_count - 1:
+            y1 = min(y0 + chunk_size, y_count - 1)
+            cps: list[list[Point]] = []
+            a: list[list[int]] = []
+            for xi in range(x0, x1 + 1):
+                row_cps: list[Point] = []
+                row_a: list[int] = []
+                for yi in range(y0, y1 + 1):
+                    row_cps.append((ox + xi * cell_size,
+                                    oy + yi * cell_size,
+                                    heightmap[yi][xi] + z_lift))
+                    row_a.append(int(alpha_grid[yi][xi]))
+                cps.append(row_cps)
+                a.append(row_a)
+            # Skip a chunk that's entirely transparent — no point
+            # emitting an all-alpha-0 mesh.
+            if any(v > 0 for row in a for v in row):
+                out.append(mesh_block(
+                    cps, texture=blend_texture, contents=None,
+                    uv_scale=uv_scale, vertex_alpha=a,
+                ))
+            y0 = y1
+        x0 = x1
+    return out
+
+
 def _g(v: float) -> str:
     """Format a float with %g — strips trailing zeros, no scientific notation."""
     return f"{v:g}"

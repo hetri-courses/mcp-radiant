@@ -118,6 +118,7 @@ def scatter_props(
     density: float = 0.75,   # was 0.55 — more cells actually get a prop
     scale_range: tuple[float, float] = (0.8, 1.4),
     exclusions: Sequence[tuple[float, float, float]] | None = None,
+    mask_min_alpha: int | None = None,
     edge_margin: float = 48.0,
     seed: int | None = None,
     layer: str = "000_Global/Geo/Scatter",
@@ -189,6 +190,37 @@ def scatter_props(
     if not palette:
         raise ValueError("scatter palette is empty")
 
+    # v23.18: optional grassiness-mask gate. When mask_min_alpha is set,
+    # read the blend_mask the terrain pass persisted to the sidecar and
+    # only place a prop where the mask alpha at that XY is >= the
+    # threshold. Used for the grass pass so grass clumps grow on the
+    # grass-FLOOR (high mask) and bare dirt stays bald (low mask) —
+    # one shared field drives both layers.
+    mask_grid = None
+    mask_ox = mask_oy = 0.0
+    mask_cs = 1.0
+    if mask_min_alpha is not None:
+        try:
+            import json as _json
+            sc = _terrain._terrain_sidecar_path(map_name)
+            with open(sc, "r", encoding="utf-8") as f:
+                bm = _json.load(f).get("blend_mask")
+            if bm:
+                mask_grid = bm["alpha_grid"]            # [y][x] 0-255
+                mask_ox, mask_oy, _mz = bm["origin"]
+                mask_cs = bm["cell_size"]
+        except (OSError, KeyError, ValueError):
+            mask_grid = None  # no mask → gate is a no-op
+
+    def _mask_ok(px: float, py: float) -> bool:
+        if mask_grid is None:
+            return True
+        xi = int(round((px - mask_ox) / mask_cs))
+        yi = int(round((py - mask_oy) / mask_cs))
+        if 0 <= yi < len(mask_grid) and 0 <= xi < len(mask_grid[0]):
+            return mask_grid[yi][xi] >= mask_min_alpha
+        return True  # outside the mask grid → don't gate
+
     rng = random.Random(seed)
     min_x, min_y = footprint_mins
     max_x, max_y = footprint_maxs
@@ -227,7 +259,9 @@ def scatter_props(
                 # Jitter within the cell so the grid isn't visible.
                 jx = x + rng.uniform(0.0, spacing)
                 jy = y + rng.uniform(0.0, spacing)
-                if jx <= max_x and jy <= max_y and not _excluded(jx, jy):
+                if (jx <= max_x and jy <= max_y
+                        and not _excluded(jx, jy)
+                        and _mask_ok(jx, jy)):
                     pz = _z_at(jx, jy)
                     model = _weighted_pick(rng, palette)
                     scale = rng.uniform(*scale_range)

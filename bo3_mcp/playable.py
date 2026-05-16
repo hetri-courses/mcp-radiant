@@ -432,13 +432,18 @@ def make_terrain_zombie_arena(
             "relief_units": 40.0,          # 16 floor + 40 = max_height 56 (== old default)
             "edge_feather_units": 96.0,
             "smooth_iterations": 1,
-            # Real outdoor dirt+grass ground. Verified: this exact
-            # material is on a `mesh` primitive in stock
-            # mp_sector_terrain_north (Treyarch's own outdoor terrain),
-            # so it's mesh-compatible and in the asset DB. Replaces the
-            # urban t7_concrete_pebbles_cracked which read as "cracked
-            # concrete", not dirt.
-            "patch_visual_texture": "t7_dirt_grassy_forest_ground",
+            # 2-layer vertex-alpha biome blend (v23.18, blend mechanism
+            # verified in zm_blend_lab). BASE = bare wet dirt/mud (shows
+            # where the grassiness mask is low); OVERLAY = vibrant lawn
+            # grass blend (shows where the mask is high). The same mask
+            # drives grass scatter density, so grass clumps grow on the
+            # grass-floor and bare mud shows in the bald patches. Base
+            # was t7_dirt_grassy_forest_ground but that's itself grassy
+            # → weak contrast; t7_mud_ground_dirt_wet_01 (verified on a
+            # stock mp_sector mesh) is properly bare for a clear read.
+            "patch_visual_texture": "t7_mud_ground_dirt_wet_01",
+            "blend_texture": "t7_grass_lawn_medium_small_green_vibrant_blend",
+            "blend_coverage": 0.5,
         },
         "indoor_subtle": {
             # No broken_floor mask — a continuous gently-settled surface,
@@ -479,6 +484,12 @@ def make_terrain_zombie_arena(
         edge_feather_units = _p.get("edge_feather_units", edge_feather_units)
         smooth_iterations = _p.get("smooth_iterations", smooth_iterations)
         patch_visual_texture = _p.get("patch_visual_texture", patch_visual_texture)
+        # v23.18 biome blend (preset-driven; only outdoor_rugged sets it)
+        terrain_blend_texture = _p.get("blend_texture")        # None if absent
+        blend_coverage = _p.get("blend_coverage", 0.5)
+    else:
+        terrain_blend_texture = None
+        blend_coverage = 0.5
 
     summary: dict[str, Any] = {
         "name": map_name, "layout": "terrain_arena",
@@ -589,6 +600,9 @@ def make_terrain_zombie_arena(
         patch_chunk_size=patch_chunk_size,
         patch_visual_texture=patch_visual_texture,
         patch_min_z_offset=patch_min_z_offset,
+        terrain_blend_texture=terrain_blend_texture,
+        blend_coverage=blend_coverage,
+        blend_seed=terrain_seed + 99,   # deterministic; shared with scatter
     )
     summary["steps"].append({
         "terrain_brushes": terrain_result.get("brushes_added"),
@@ -693,6 +707,11 @@ def make_terrain_zombie_arena(
                 spacing=44.0,                 # tight grid = dense ground cover
                 density=max(scatter_density, 0.85),
                 exclusions=exclusions, edge_margin=56.0,
+                # Gate grass to the grass-FLOOR: only place where the
+                # shared blend mask alpha ≥ 96 (no-op if no blend mask,
+                # e.g. indoor_subtle). Grass clumps then grow on the
+                # grass texture, bare mud stays bald.
+                mask_min_alpha=96,
                 seed=base_seed,
             )
             placed_total += g["placed"]

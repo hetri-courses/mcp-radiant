@@ -665,6 +665,18 @@ def generate_terrain_diffusion(
     patch_chunk_size: int = 8,
     patch_visual_texture: str = "t7_concrete_pebbles_cracked",
     patch_min_z_offset: float = 2.0,  # lift patches above the room floor to avoid Z-fight
+    # v23.18 vertex-alpha terrain blend. When `terrain_blend_texture`
+    # is set (patch_mesh only), a 3rd overlay mesh per chunk is emitted
+    # using that `*_blend` material with per-CP vertex alpha from a
+    # low-frequency "grassiness" mask. patch_visual_texture is the BASE
+    # (e.g. bare dirt) that shows where the mask is low; the blend
+    # (e.g. grass) shows where it's high. The mask is persisted to the
+    # sidecar so scatter can read the SAME field — grass clumps grow
+    # where the floor is grassy. blend_coverage ≈ fraction grassy;
+    # blend_seed makes it deterministic.
+    terrain_blend_texture: str | None = None,
+    blend_coverage: float = 0.5,
+    blend_seed: int | None = None,
 ) -> dict:
     """Generate BO3 terrain using xandergos/terrain-diffusion as the heightmap
     source. Hits the REST API, converts meters → BO3 inches, places brushes.
@@ -924,6 +936,50 @@ def generate_terrain_diffusion(
             collision_texture=patch_visual_texture,  # same material on both halves
             collision_contents=_patches.FLOOR_COLLISION_CONTENTS,
         )
+        # ── v23.18 vertex-alpha grass blend ──────────────────────────
+        # A low-frequency "grassiness" mask over the padded grid drives
+        # a grass-blend overlay (base patch_visual_texture shows where
+        # the mask is low). The mask is persisted to the sidecar so the
+        # scatter pass can read the SAME field — grass clumps grow where
+        # the floor is grassy. Mask: fractal value noise → smoothstep
+        # around a threshold set by blend_coverage, → 0..255 alpha.
+        blend_alpha_grid: list[list[int]] | None = None
+        if terrain_blend_texture:
+            pyc = len(padded)
+            pxc = len(padded[0])
+            _bseed = blend_seed if blend_seed is not None else (seed or 0) + 99
+            noise = value_noise_heightmap(
+                pxc, pyc, scale=0.16, octaves=4, seed=_bseed,
+            )  # [y][x] in ~[0,1]
+            cov = max(0.05, min(0.95, blend_coverage))
+            # threshold so ≈cov fraction of cells end up "grassy"
+            flat = sorted(v for row in noise for v in row)
+            thr = flat[int((1.0 - cov) * (len(flat) - 1))]
+            span = 0.22  # smoothstep width around the threshold
+            blend_alpha_grid = []
+            for yy in range(pyc):
+                arow: list[int] = []
+                for xx in range(pxc):
+                    t = (noise[yy][xx] - thr) / span + 0.5
+                    t = 0.0 if t < 0 else (1.0 if t > 1 else t)
+                    s = t * t * (3.0 - 2.0 * t)  # smoothstep
+                    arow.append(int(round(s * 255)))
+                blend_alpha_grid.append(arow)
+            overlay_bodies = _patches.heightmap_to_blend_overlay(
+                padded, blend_alpha_grid,
+                origin=origin, cell_size=cell_size,
+                chunk_size=patch_chunk_size,
+                blend_texture=terrain_blend_texture,
+                z_lift=1.0,
+            )
+            patch_bodies = list(patch_bodies) + overlay_bodies
+            preprocessing_applied["terrain_blend"] = {
+                "blend_texture": terrain_blend_texture,
+                "base_texture": patch_visual_texture,
+                "coverage": cov,
+                "overlay_chunks": len(overlay_bodies),
+                "mask_seed": _bseed,
+            }
         mf, ws = geometry._load_top(map_name)
         for body in patch_bodies:
             ws.brushes.append(body)
@@ -1012,6 +1068,18 @@ def generate_terrain_diffusion(
         "max_elev_m": meta["max_elev_m"],
         "elev_range_m": meta["elev_range_m"],
     }
+    # v23.18: persist the grassiness mask (padded grid, 0-255 alpha) so
+    # the scatter pass can bias grass to where the floor is grassy. The
+    # padded grid is one cell larger per side than `scaled` (footprint
+    # parity); scatter samples it in world space via origin+cell_size.
+    _bag = locals().get("blend_alpha_grid")
+    if _bag:
+        sidecar_data["blend_mask"] = {
+            "alpha_grid": _bag,
+            "origin": list(origin),
+            "cell_size": cell_size,
+            "blend_texture": terrain_blend_texture,
+        }
     try:
         os.makedirs(os.path.dirname(sidecar_path), exist_ok=True)
         with open(sidecar_path, "w", encoding="utf-8") as f:
