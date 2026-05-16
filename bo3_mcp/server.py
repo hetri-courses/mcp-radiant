@@ -47,6 +47,7 @@ def _reload_mcp_modules() -> dict:
         "bo3_mcp.gsc",          # depends on stdlib only
         "bo3_mcp.geometry",     # depends on brushes, mapfile, paths, entities
         "bo3_mcp.terrain",      # depends on brushes, geometry, mapfile, paths
+        "bo3_mcp.scatter",      # depends on terrain (sidecar Z), entities, mapfile, paths
         "bo3_mcp.zm",           # depends on brushes, entities, geometry, gsc, mapfile, paths
         "bo3_mcp.scaffold",     # depends on paths, mapfile
         "bo3_mcp.pipeline",     # depends on paths
@@ -248,6 +249,7 @@ def make_terrain_zombie_arena(
     patch_chunk_size: int | None = None,
     patch_visual_texture: str | None = None,
     patch_min_z_offset: float | None = None,
+    terrain_preset: str | None = None,
     terrain_server_url: str | None = None,
     overwrite: bool = False,
 ) -> dict:
@@ -323,6 +325,8 @@ def make_terrain_zombie_arena(
         kwargs["patch_visual_texture"] = patch_visual_texture
     if patch_min_z_offset is not None:
         kwargs["patch_min_z_offset"] = patch_min_z_offset
+    if terrain_preset is not None:
+        kwargs["terrain_preset"] = terrain_preset
     if terrain_server_url is not None:
         kwargs["terrain_server_url"] = terrain_server_url
     return playable.make_terrain_zombie_arena(map_name, **kwargs)

@@ -354,6 +354,19 @@ def make_terrain_zombie_arena(
     patch_chunk_size: int = 8,
     patch_visual_texture: str = "t7_concrete_pebbles_cracked",
     patch_min_z_offset: float = 2.0,
+    # v23.9: named knob bundles. A preset is NOT new architecture — it
+    # just overrides the terrain knobs above with a coherent set, so
+    # recipes don't accrete one-off parameter combos. Recognized:
+    #   "outdoor_rugged" (default) — rolling dirt/grass arena: keeps the
+    #       v22.14 defaults exactly (broken_floor, max_height 56, pebbles).
+    #   "indoor_subtle" — settled tile/concrete floor: NO broken_floor
+    #       mask, very low relief (~8u), tile material. The look the user
+    #       wanted for starter/concrete rooms ("old heaving tile floor"),
+    #       paired with a cracked-tile material. Continuous, gentle.
+    #   "none" — apply no bundle; use the explicit knob args as-is.
+    # The preset wins over the individual knob defaults; pass "none" if
+    # you want to drive every knob by hand.
+    terrain_preset: str = "outdoor_rugged",
     terrain_server_url: str = "http://localhost:8000",
     overwrite: bool = False,
 ) -> dict[str, Any]:
@@ -388,7 +401,47 @@ def make_terrain_zombie_arena(
     if not map_name.startswith("zm_"):
         raise ValueError(f"map name must start with 'zm_' (got {map_name!r})")
 
-    summary: dict[str, Any] = {"name": map_name, "layout": "terrain_arena", "steps": []}
+    # ── Apply terrain preset bundle. "outdoor_rugged" == the existing
+    # defaults (no-op, so existing callers are byte-identical).
+    # "indoor_subtle" == settled tile/concrete floor.
+    _PRESETS = {
+        "outdoor_rugged": {
+            "terrain_style": "broken_floor",
+            "broken_floor_coverage": 0.25,
+            "max_height_units": 56.0,
+            "edge_feather_units": 96.0,
+            "smooth_iterations": 1,
+            "patch_visual_texture": "t7_concrete_pebbles_cracked",
+        },
+        "indoor_subtle": {
+            # No broken_floor mask — we want a continuous gently-settled
+            # surface, not patches punching through. Very low relief so
+            # it reads as "the tile floor heaved a little", not terrain.
+            "terrain_style": "full_voxel",
+            "max_height_units": 8.0,
+            "edge_feather_units": 64.0,
+            "smooth_iterations": 3,           # extra smoothing = subtle
+            "patch_visual_texture": "t7_concrete_tiles_2x2_dirty_01",
+        },
+    }
+    if terrain_preset != "none":
+        if terrain_preset not in _PRESETS:
+            raise ValueError(
+                f"unknown terrain_preset {terrain_preset!r}; "
+                f"valid: {sorted(_PRESETS) + ['none']}"
+            )
+        _p = _PRESETS[terrain_preset]
+        terrain_style = _p.get("terrain_style", terrain_style)
+        broken_floor_coverage = _p.get("broken_floor_coverage", broken_floor_coverage)
+        max_height_units = _p.get("max_height_units", max_height_units)
+        edge_feather_units = _p.get("edge_feather_units", edge_feather_units)
+        smooth_iterations = _p.get("smooth_iterations", smooth_iterations)
+        patch_visual_texture = _p.get("patch_visual_texture", patch_visual_texture)
+
+    summary: dict[str, Any] = {
+        "name": map_name, "layout": "terrain_arena",
+        "terrain_preset": terrain_preset, "steps": [],
+    }
 
     # ── 1. Scaffold (template + GSC + zone manifest)
     scaffold.create_zombie_map(map_name, overwrite=overwrite)

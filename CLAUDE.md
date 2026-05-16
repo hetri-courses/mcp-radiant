@@ -130,6 +130,7 @@ gsc.py          GSC line edits: #using auto-management, init_zones[N] append, de
 geometry.py     rooms / walls / slabs / stairs / doorways / courtyards / exterior seal
 terrain.py      heightmap → terrain brushes (voxel boxes OR patch meshes via patches.py)
 patches.py      `mesh` / `curve` patch-primitive synthesis (smooth terrain; nested inside brush blocks)
+scatter.py      TD-driven prop scatter (misc_model + no_collmap; vetted foliage/debris catalog)
 zm.py           zombie-mode recipes: perks/box/pap/wall buys/spawners/zones/doors/barricades + catalogs
 scaffold.py     create_zombie_map + GSC/CSC/.map/.zone templates
 pipeline.py     subprocess wrappers for gdtdb / cod2map64 / radiant_modtools / linker_modtools + output parsing
@@ -175,6 +176,47 @@ The path helpers in [paths.py](bo3_mcp/paths.py) (`map_source`, `map_prefab_dir`
 - `curve_block(...)` — Bezier-smoothed variant. Use for decorative arches/ramps, NOT terrain.
 
 **Voxel terrain (`heightmap_to_brushes`) remains as a fallback** for the "rocky mesa" aesthetic (stock `zm_terrain_test.map` does this), but is **not** the default for new terrain. Don't try to solve blockiness with `broken_floor_coverage` / `max_height_units` / `smooth_iterations` tweaks — those are postprocessing knobs, not the renderer. Switch to `terrain_render_mode="patch_mesh"` instead.
+
+### Prop scatter ([scatter.py](bo3_mcp/scatter.py))
+
+`scatter_props(map_name, footprint_mins, footprint_maxs, ...)` drops stock
+BO3 prop xmodels (foliage / debris / rubble) across a map to add
+environmental life. **Every scattered prop is `misc_model` + `no_collmap "1"`**
+— no collision map, so the player and zombies walk straight through.
+This is deliberate and load-bearing: a collidable prop on a path would
+re-introduce the exact height-discontinuity nav-break class we spent the
+patch-terrain effort eliminating. `no_collmap` props **cannot** affect
+navmesh/pathing, by construction.
+
+- Z comes from the terrain sidecar via `terrain.terrain_height_at_xy`;
+  degrades to `fallback_z` (flat-floor maps with no sidecar still work).
+- `PROP_CATALOG` (categories `grass` / `debris` / `props` / `grass_snow`)
+  — every model name was mined from a real `"model"` KVP in shipping
+  mod-tools `.map` sources. Linker auto-collects misc_model xmodels into
+  the .ff (verified in zm_scatter_lab: `Converting xmesh
+  p7_foliage_grass_02_lod0 ... Collision: false`); no zone-manifest entry
+  needed.
+- `exclusions=[(x,y,radius), ...]` keep-clear circles — pass doorway
+  pads / spawner XYs / perk XYs / player spawn so props never clip a
+  machine or block a sightline.
+- Jittered grid + seed = deterministic, visually even without rows.
+- **NOT yet auto-wired into `make_terrain_zombie_arena`** — pending
+  in-game visual sign-off on `zm_scatter_lab` (compile-pass ≠ runtime-pass).
+
+### Terrain presets
+
+`make_terrain_zombie_arena(terrain_preset=...)` — a preset is just a
+named bundle of the existing terrain knobs, NOT new architecture (keeps
+recipes from accreting one-off parameter combos). Recognized:
+- `outdoor_rugged` (default) — rolling dirt/grass arena; the exact
+  v22.14 defaults (broken_floor, max_height 56, pebbles). No-op, so
+  existing callers are byte-identical.
+- `indoor_subtle` — settled tile/concrete floor: NO broken_floor mask,
+  very low relief (max_height 8), extra smoothing (3 passes), tile
+  material. The "old heaving tile floor" look for non-cave indoor rooms.
+- `none` — drive every knob by hand.
+Add a preset = add an entry to the `_PRESETS` dict in playable.py; don't
+thread new params through every recipe.
 
 ### Brush winding convention
 
