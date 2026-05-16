@@ -12,7 +12,7 @@ An MCP server for authoring Black Ops III custom **zombie maps** by talking to C
 | Zone manifest (`.zone` asset list) | ✅ | |
 | Compile (`cod2map64.exe`) + Link (`linker_modtools.exe`) | ✅ | |
 | Axis-aligned box brushes (rooms, walls, floors, stairs, doorways) | ✅ (v0.5) | |
-| ML terrain (terrain-diffusion → patch meshes), prop scatter, biome blend | ✅ (v23) | |
+| ML terrain (terrain-diffusion → patch meshes), prop scatter | ✅ (v23) | biome blend reverted; minor residual foliage float on steep cells (accepted) |
 | Hand-sculpted curved/complex geometry | | ✅ |
 | Lighting placement, light export, real lighting build | | ✅ |
 | In-game playtest launch | | ✅ (via launcher) |
@@ -20,12 +20,17 @@ An MCP server for authoring Black Ops III custom **zombie maps** by talking to C
 > **v23 terrain architecture (May 2026):** the MCP now owns ML-driven
 > terrain end-to-end — `make_terrain_zombie_arena` generates a
 > diffusion heightmap, renders it as smooth BO3 `mesh` patches (NOT
-> blocky voxel brushes), scatters stock foliage/debris, and paints a
-> grass-floor biome blend under the grass. `terrain_preset` =
-> `outdoor_rugged` / `indoor_subtle`. Architecture, hard-won format
-> rules, and verified-pattern invariants live in **CLAUDE.md**
-> ("Terrain rendering: patches over voxel", "Prop scatter", "Terrain
-> presets") and `tests/fixtures/PATCH_FORMAT_NOTES.md`.
+> blocky voxel brushes), and scatters stock foliage/debris.
+> `terrain_height_at_xy` is bilinear (props/perks/spawners sit exactly
+> on the interpolated surface); foliage gets a slope-aware sink so it
+> reads as planted on broken_floor slopes — a minor residual float on
+> the steepest cells is a known, accepted limitation. The v23.18-19
+> grass-floor biome blend was **reverted** (never read right in-game);
+> the infra is left inert. `terrain_preset` = `outdoor_rugged` /
+> `indoor_subtle`. Architecture, hard-won format rules, and
+> verified-pattern invariants live in **CLAUDE.md** ("Terrain
+> rendering: patches over voxel", "Prop scatter", "Terrain presets")
+> and `tests/fixtures/PATCH_FORMAT_NOTES.md`.
 
 ## Setup
 
