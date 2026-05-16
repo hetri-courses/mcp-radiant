@@ -551,21 +551,6 @@ def make_terrain_zombie_arena(
         # Arena east doorway: x=768, centered at y=0, opens to vault.
         pads.append({"center": [736, 0], "radius": 64.0,
                      "z": floor_thickness_units})
-    # Wall-buy standing pads. The arena gun wall-buys are at the
-    # south/north walls (320, ∓496). The player stands ~80u inward to
-    # read/buy them. broken_floor terrain there is a lottery of flat
-    # valleys and raised peaks — sampling a single point for the chalk
-    # Z gave "one side unreachably high" (v23.12 playtest). Flatten a
-    # deterministic pad at each standing spot (same mechanism as the
-    # doorway pads): the player always stands on known flat ground, so
-    # the chalk Z is deterministic AND you're never buying a gun while
-    # standing on a slope/peak. WALL_BUY_STAND_POINTS is the single
-    # source of truth, reused by place_wall_buys_on_terrain below.
-    WALL_BUY_STAND_POINTS = [(320.0, -416.0), (320.0, 416.0)]  # 80u inward of ∓496
-    if include_wall_buys:
-        for sx, sy in WALL_BUY_STAND_POINTS:
-            pads.append({"center": [sx, sy], "radius": 96.0,
-                         "z": floor_thickness_units})
     if extra_flatten_pads:
         pads.extend(extra_flatten_pads)
 
@@ -628,37 +613,17 @@ def make_terrain_zombie_arena(
         )
         summary["steps"].append({"arena_perks_on_terrain": perks_result["count"]})
 
-    # ── 10. Arena wall buys + lights. Wall buys go on the WALL, but the
-    # player reading the chalk stands on the TD terrain in front of it.
-    # z=8 is the flat-floor-tuned chalk height; place_wall_buys_on_terrain
-    # lifts each by how much the terrain rose at its XY so the gun
-    # outline stays at eye level (v23.11 playtest: chalk too low on TD).
-    if include_wall_buys:
-        wall_buys_result = terrain.place_wall_buys_on_terrain(
-            map_name,
-            wall_buys=[
-                {"weapon": "smg_standard", "origin": (320, -496, 8), "angles": (0, 0, 0)},
-                {"weapon": "ar_standard",  "origin": (320, 496, 8),  "angles": (0, 180, 0)},
-            ],
-            floor_baseline_z=floor_thickness_units,
-            # Sample at the flattened standing pad (80u inward toward
-            # the arena centre — matches WALL_BUY_STAND_POINTS). The pad
-            # makes terrain there deterministic (= floor + patch_z_off),
-            # so lift is a constant ~2, not a broken_floor lottery.
-            sample_toward=(320.0, 0.0),
-            standoff=80.0,
-            # Fixed rise above the flat pad so the gun outline sits at
-            # chest/eye height. Deterministic because the pad guarantees
-            # flat ground — can't go "unreachably high" (v23.12 bug).
-            eye_offset=28.0,
-        )
-        summary["steps"].append({
-            "arena_wall_buys_on_terrain": wall_buys_result["count"],
-            "wall_buy_lifts": [round(p["lift"], 1)
-                               for p in wall_buys_result["placed"]],
-        })
+    # ── 10. Arena wall buys + lights (wall buys on walls, NOT on terrain).
+    # Reverted v23.12/.13 terrain-height tracking — every variant
+    # (inward sampling, flatten-pad + eye_offset) regressed in playtest.
+    # Back to the original fixed flat-floor chalk Z via furnish_zone.
+    arena_wall_buys = [
+        {"weapon": "smg_standard", "origin": (320, -496, 8), "angles": (0, 0, 0)},
+        {"weapon": "ar_standard",  "origin": (320, 496, 8),  "angles": (0, 180, 0)},
+    ] if include_wall_buys else []
     zm.furnish_zone(
         map_name, "arena_zone",
+        wall_buys=arena_wall_buys,
         light_origins=[
             (100, -240, 320), (100, 240, 320),
             (540, -240, 320), (540, 240, 320),
